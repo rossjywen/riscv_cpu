@@ -1,0 +1,90 @@
+
+ // ===== A. Initial test instructions =====
+00500093  // [00] PC=0x0000  ADDI x1, x0, 5
+00A00113  // [01] PC=0x0004  ADDI x2, x0, 10
+002081B3  // [02] PC=0x0008  ADD  x3, x1, x2
+
+// ===== B. U-type =====
+123452B7  // [03] PC=0x000C  LUI   x5, 0x12345
+00001297  // [04] PC=0x0010  AUIPC x5, 0x1
+
+// ===== C. Jump =====
+008002EF  // [05] PC=0x0014  JAL  x5, 8
+000082E7  // [06] PC=0x0018  JALR x5, 0(x1)
+
+// ===== D. Branch =====
+00208463  // [07] PC=0x001C  BEQ  x1, x2, 8
+00209463  // [08] PC=0x0020  BNE  x1, x2, 8
+0020C463  // [09] PC=0x0024  BLT  x1, x2, 8
+0020D463  // [10] PC=0x0028  BGE  x1, x2, 8
+0020E463  // [11] PC=0x002C  BLTU x1, x2, 8
+0020F463  // [12] PC=0x0030  BGEU x1, x2, 8
+
+// ===== E. Load =====
+00008283  // [13] PC=0x0034  LB  x5, 0(x1)
+00009283  // [14] PC=0x0038  LH  x5, 0(x1)
+0000A283  // [15] PC=0x003C  LW  x5, 0(x1)
+0000C283  // [16] PC=0x0040  LBU x5, 0(x1)
+0000D283  // [17] PC=0x0044  LHU x5, 0(x1)
+
+// ===== F. Store =====
+00208023  // [18] PC=0x0048  SB x2, 0(x1)
+00209023  // [19] PC=0x004C  SH x2, 0(x1)
+0020A023  // [20] PC=0x0050  SW x2, 0(x1)
+
+// ===== G. Immediate ALU =====
+0070A293  // [21] PC=0x0054  SLTI  x5, x1, 7
+0070B293  // [22] PC=0x0058  SLTIU x5, x1, 7
+00F0C293  // [23] PC=0x005C  XORI  x5, x1, 15
+00F0E293  // [24] PC=0x0060  ORI   x5, x1, 15
+00F0F293  // [25] PC=0x0064  ANDI  x5, x1, 15
+00309293  // [26] PC=0x0068  SLLI  x5, x1, 3
+0030D293  // [27] PC=0x006C  SRLI  x5, x1, 3
+4030D293  // [28] PC=0x0070  SRAI  x5, x1, 3
+
+// ===== H. Register ALU =====
+402082B3  // [29] PC=0x0074  SUB  x5, x1, x2
+002092B3  // [30] PC=0x0078  SLL  x5, x1, x2
+0020A2B3  // [31] PC=0x007C  SLT  x5, x1, x2
+0020B2B3  // [32] PC=0x0080  SLTU x5, x1, x2
+0020C2B3  // [33] PC=0x0084  XOR  x5, x1, x2
+0020D2B3  // [34] PC=0x0088  SRL  x5, x1, x2
+4020D2B3  // [35] PC=0x008C  SRA  x5, x1, x2
+0020E2B3  // [36] PC=0x0090  OR   x5, x1, x2
+0020F2B3  // [37] PC=0x0094  AND  x5, x1, x2
+
+// ===== I. Fence / Trap =====
+0FF0000F  // [38] PC=0x0098  FENCE
+00000073  // [39] PC=0x009C  ECALL    (trap)
+00100073  // [40] PC=0x00A0  EBREAK   (trap)
+
+// ===== J. Counter instructions =====
+// Requires ENABLE_COUNTERS=1
+// High 32 bits also require ENABLE_COUNTERS64=1
+C00022F3  // [41] PC=0x00A4  RDCYCLE    x5
+C01022F3  // [42] PC=0x00A8  RDTIME     x5
+C02022F3  // [43] PC=0x00AC  RDINSTRET  x5
+C80022F3  // [44] PC=0x00B0  RDCYCLEH   x5
+C81022F3  // [45] PC=0x00B4  RDTIMEH    x5
+C82022F3  // [46] PC=0x00B8  RDINSTRETH x5
+
+// ===== K. RV32M optional extension =====
+// MUL requires ENABLE_MUL or ENABLE_FAST_MUL
+// DIV/REM requires ENABLE_DIV
+022082B3  // [47] PC=0x00BC  MUL    x5, x1, x2
+022092B3  // [48] PC=0x00C0  MULH   x5, x1, x2
+0220A2B3  // [49] PC=0x00C4  MULHSU x5, x1, x2
+0220B2B3  // [50] PC=0x00C8  MULHU  x5, x1, x2
+0220C2B3  // [51] PC=0x00CC  DIV    x5, x1, x2
+0220D2B3  // [52] PC=0x00D0  DIVU   x5, x1, x2
+0220E2B3  // [53] PC=0x00D4  REM    x5, x1, x2
+0220F2B3  // [54] PC=0x00D8  REMU   x5, x1, x2
+
+// ===== L. PicoRV32 custom IRQ instructions =====
+// Nonstandard ISA; ENABLE_IRQ=1 required
+0001428B  // [55] PC=0x00DC  GETQ    x5, q2
+0202A10B  // [56] PC=0x00E0  SETQ    q2, x5
+0400000B  // [57] PC=0x00E4  RETIRQ
+0601608B  // [58] PC=0x00E8  MASKIRQ x1, x2
+0800408B  // [59] PC=0x00EC  WAITIRQ x1
+0A01608B  // [60] PC=0x00F0  TIMER   x1, x2
