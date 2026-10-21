@@ -2,7 +2,7 @@ module bram(
     input wire          rst_n,
     input wire          clk,
     input wire          valid,
-    input wire [9:0]    addr,
+    input wire [29:0]    addr,
     output reg          ready,
     output reg [31:0]   data
 );
