@@ -23,16 +23,12 @@ module cpu_core (
     wire mem_xfer;
     assign mem_xfer = mem_ready & mem_valid;
 
-    // memory look-ahead
-    //wire [29:0] mem_la_addr;
-    //assign mem_la_addr = mem_do_rinst? next_pc : 0;
-    wire [31:0] mem_data_noshuffle = mem_data;
+    reg [31:0] mem_data_q;
+
 
     // pc
     reg [29:0] current_pc;
-    reg [29:0] next_pc;
-    //wire [29:0] next_pc_la;
-    //assign next_pc = 
+    reg first_ins;
 
 
     // memory interface
@@ -52,6 +48,7 @@ module cpu_core (
                 end
                 MEM_WAIT: begin
                     if (mem_xfer) begin
+                        mem_data_q <= mem_data;
                         mem_valid <= 0;
                         mem_state <= MEM_IDLE;
                         $display("memory data: %08h", mem_data);
@@ -62,37 +59,8 @@ module cpu_core (
     end
 
 
-    // fetch module
-    always @(posedge clk) begin
-        if (!rst_n) begin
-            current_pc <= 30'b0;
-            next_pc <= 30'b0;
-            cpu_state <= 0;
-            mem_do_rinst <= 0;
-        end else begin
-            case (cpu_state)
-                0: begin
-                    if (!mem_do_rinst) begin
-                        mem_do_rinst <= 1;
-                        next_pc <= next_pc + 30'd1;
-                        current_pc <= next_pc;
-
-                        cpu_state <= 1;
-                    end
-                end
-                1: begin
-                    if ((mem_xfer & mem_do_rinst)) begin
-                        mem_do_rinst <= 0;
-                        cpu_state <= 0;
-                    end
-                end
-            endcase
-        end
-    end
-
-
     reg decoder_1_stage;
-    reg [31:0] mem_data_q;
+    reg decoder_done;
 
     reg instr_lui, instr_auipc, instr_jal, instr_jalr;
 	reg instr_beq, instr_bne, instr_blt, instr_bge, instr_bltu, instr_bgeu;
@@ -127,11 +95,40 @@ module cpu_core (
     always @(posedge clk) begin
         if (!rst_n) begin
             decoder_1_stage <= 0;
+            decoder_done <= 0;
+
+            is_beq_bne_blt_bge_bltu_bgeu <= 0;
+            is_compare <= 0;
+
+            instr_beq   <= 0;
+            instr_bne   <= 0;
+            instr_blt   <= 0;
+            instr_bge   <= 0;
+            instr_bltu  <= 0;
+            instr_bgeu  <= 0;
+
+            instr_addi  <= 0;
+            instr_slti  <= 0;
+            instr_sltiu <= 0;
+            instr_xori  <= 0;
+            instr_ori   <= 0;
+            instr_andi  <= 0;
+
+            instr_add   <= 0;
+            instr_sub   <= 0;
+            instr_sll   <= 0;
+            instr_slt   <= 0;
+            instr_sltu  <= 0;
+            instr_xor   <= 0;
+            instr_srl   <= 0;
+            instr_sra   <= 0;
+            instr_or    <= 0;
+            instr_and   <= 0;
+
+            instr_fence <= 0;
+
         end else begin
-            // save memory data
-            if (mem_xfer) begin
-                mem_data_q <= mem_data;
-            end
+            decoder_done <= 0;
 
             // this is 1-st decode stage
             if (mem_xfer & mem_do_rinst) begin
@@ -157,8 +154,6 @@ module cpu_core (
                 decoded_rs1 <= mem_data[19:15];
                 decoded_rs2 <= mem_data[24:20];
 
-                decoder_1_stage <= 1;
-
                 // if (mem_data[6:0] == 7'b0001011 && mem_data[31:25] == 7'b0000000 && ENABLE_IRQ && ENABLE_IRQ_QREGS)
                 // 	decoded_rs1[regindex_bits-1] <= 1; // instr_getq
 
@@ -169,6 +164,9 @@ module cpu_core (
 
             // this is 2-nd decode stage
             if (decoder_1_stage) begin
+                decoder_1_stage <= 0;
+                decoder_done <= 1;
+
                 instr_beq   <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b000;
                 instr_bne   <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b001;
                 instr_blt   <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b100;
@@ -268,6 +266,7 @@ module cpu_core (
         end
     end
 
+    // decoder debug module
     reg [63:0] new_ascii_instr;
 
     always @* begin
@@ -328,6 +327,59 @@ module cpu_core (
 		if (instr_waitirq)  new_ascii_instr = "waitirq";
 		if (instr_timer)    new_ascii_instr = "timer";
 	end
+
+
+
+	// localparam cpu_state_trap   = 8'b10000000;
+	localparam cpu_state_fetch  = 3'd0;
+	localparam cpu_state_ld_rs1 = 3'd1;
+	localparam cpu_state_ld_rs2 = 3'd2;
+	localparam cpu_state_exec   = 3'd3;
+	// localparam cpu_state_shift  = 8'b00000100;
+	// localparam cpu_state_stmem  = 8'b00000010;
+	// localparam cpu_state_ldmem  = 8'b00000001;
+
+    // cpu module
+    // fetch + exec
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            current_pc <= 30'b0;
+            cpu_state <= cpu_state_fetch;
+            mem_do_rinst <= 0;
+            first_ins <= 1;
+        end else begin
+            case (cpu_state)
+                cpu_state_fetch: begin
+                    if (!mem_do_rinst) begin
+                        mem_do_rinst <= 1;
+                        first_ins <= 0;
+
+                        if (first_ins) begin
+                            current_pc <= 0;
+                        end else begin
+                            current_pc <= current_pc + 1;
+                        end
+                    end
+
+                    // todo, add branch write-back
+
+                    if ((mem_xfer & mem_do_rinst)) begin
+                        mem_do_rinst <= 0;
+                        cpu_state <= cpu_state_ld_rs1;
+                    end
+                end
+
+                cpu_state_ld_rs1: begin
+                    // make sure cpu_state_ld_rs1 happen after fully decoding
+                    if (decoder_done) begin
+                        cpu_state <= cpu_state_fetch;
+                    end
+
+                end
+            endcase
+        end
+    end
+
 
 
 endmodule
