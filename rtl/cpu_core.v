@@ -27,8 +27,8 @@ module cpu_core (
 
 
     // pc
-    reg [29:0] current_pc;
-    reg first_ins;
+    reg [31:0] current_pc;
+    reg [31:0] next_pc;
 
 
     // memory interface
@@ -43,7 +43,7 @@ module cpu_core (
                     if (mem_do_rinst) begin
                         mem_valid <= 1'b1;
                         mem_state <= MEM_WAIT;
-                        mem_addr <= current_pc;
+                        mem_addr <= current_pc[31:2];
                     end
                 end
                 MEM_WAIT: begin
@@ -130,6 +130,14 @@ module cpu_core (
         end else begin
             decoder_done <= 0;
 
+            is_lui_auipc_jal <= |{instr_lui, instr_auipc, instr_jal};
+            is_lui_auipc_jal_jalr_addi_add_sub <= |{instr_lui, instr_auipc, instr_jal, instr_jalr, instr_addi, instr_add, instr_sub};
+            is_slti_blt_slt <= |{instr_slti, instr_blt, instr_slt};
+            is_sltiu_bltu_sltu <= |{instr_sltiu, instr_bltu, instr_sltu};
+            is_lbu_lhu_lw <= |{instr_lbu, instr_lhu, instr_lw};
+            is_compare <= |{is_beq_bne_blt_bge_bltu_bgeu, instr_slti, instr_slt, instr_sltiu, instr_sltu};
+
+
             // this is 1-st decode stage
             if (mem_xfer & mem_do_rinst) begin
                 decoder_1_stage <= 1;
@@ -147,7 +155,7 @@ module cpu_core (
                 is_alu_reg_imm               <= mem_data[6:0] == 7'b0010011;
                 is_alu_reg_reg               <= mem_data[6:0] == 7'b0110011;
 
-                // this is for U-type
+                // this is for J-type
                 { decoded_imm_j[31:20], decoded_imm_j[10:1], decoded_imm_j[11], decoded_imm_j[19:12], decoded_imm_j[0] } <= $signed({mem_data[31:12], 1'b0});
 
                 decoded_rd <= mem_data[11:7];
@@ -242,11 +250,11 @@ module cpu_core (
                     mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0000000,
                     mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0100000
                 };
-
+                
+                // todo, idk why
                 is_lui_auipc_jal_jalr_addi_add_sub <= 0;
                 is_compare <= 0;
 
-                (* parallel_case *)
                 case (1'b1)
                     instr_jal:
                         decoded_imm <= decoded_imm_j;
@@ -330,6 +338,73 @@ module cpu_core (
 
 
 
+    reg [31:0] cpuregs [0:31];
+
+	//reg [63:0] count_cycle, count_instr;
+	reg [31:0] reg_op1, reg_op2, reg_out;
+	//reg [4:0] reg_sh;
+
+
+    wire [31:0] cpuregs_rs1 = decoded_rs1 ? cpuregs[decoded_rs1] : 0;
+    wire [31:0] cpuregs_rs2 = decoded_rs2 ? cpuregs[decoded_rs2] : 0;
+
+
+	reg [31:0] alu_out, alu_out_q;
+	reg alu_out_0, alu_out_0_q;
+	reg alu_wait, alu_wait_2;
+
+	reg [31:0] alu_add_sub;
+	reg [31:0] alu_shl, alu_shr;
+	reg alu_eq, alu_ltu, alu_lts;
+
+    // alu module
+    always @* begin
+        alu_add_sub = instr_sub ? reg_op1 - reg_op2 : reg_op1 + reg_op2;
+        alu_eq = reg_op1 == reg_op2;
+        alu_lts = $signed(reg_op1) < $signed(reg_op2);
+        alu_ltu = reg_op1 < reg_op2;
+        alu_shl = reg_op1 << reg_op2[4:0];
+        alu_shr = $signed({instr_sra || instr_srai ? reg_op1[31] : 1'b0, reg_op1}) >>> reg_op2[4:0];
+    end
+
+	always @* begin
+		alu_out_0 = 'bx;
+		case (1'b1)
+			instr_beq:
+				alu_out_0 = alu_eq;
+			instr_bne:
+				alu_out_0 = !alu_eq;
+			instr_bge:
+				alu_out_0 = !alu_lts;
+			instr_bgeu:
+				alu_out_0 = !alu_ltu;
+			is_slti_blt_slt:
+				alu_out_0 = alu_lts;
+			is_sltiu_bltu_sltu:
+				alu_out_0 = alu_ltu;
+		endcase
+
+		alu_out = 'bx;
+		case (1'b1)
+			is_lui_auipc_jal_jalr_addi_add_sub:
+				alu_out = alu_add_sub;
+			is_compare:
+				alu_out = alu_out_0;
+			instr_xori || instr_xor:
+				alu_out = reg_op1 ^ reg_op2;
+			instr_ori || instr_or:
+				alu_out = reg_op1 | reg_op2;
+			instr_andi || instr_and:
+				alu_out = reg_op1 & reg_op2;
+			instr_sll || instr_slli:
+				alu_out = alu_shl;
+			instr_srl || instr_srli || instr_sra || instr_srai:
+				alu_out = alu_shr;
+		endcase
+    end
+
+
+
 	// localparam cpu_state_trap   = 8'b10000000;
 	localparam cpu_state_fetch  = 3'd0;
 	localparam cpu_state_ld_rs1 = 3'd1;
@@ -338,30 +413,30 @@ module cpu_core (
 	// localparam cpu_state_shift  = 8'b00000100;
 	// localparam cpu_state_stmem  = 8'b00000010;
 	// localparam cpu_state_ldmem  = 8'b00000001;
+    integer i;
 
     // cpu module
     // fetch + exec
     always @(posedge clk) begin
         if (!rst_n) begin
-            current_pc <= 30'b0;
+            current_pc <= 32'b0;
+            next_pc <= 32'b0;
+
             cpu_state <= cpu_state_fetch;
+
             mem_do_rinst <= 0;
-            first_ins <= 1;
+            
+            for (i = 0; i < 32; i = i + 1) begin
+                cpuregs[i] <= 32'd0;
+            end
         end else begin
             case (cpu_state)
                 cpu_state_fetch: begin
                     if (!mem_do_rinst) begin
                         mem_do_rinst <= 1;
-                        first_ins <= 0;
-
-                        if (first_ins) begin
-                            current_pc <= 0;
-                        end else begin
-                            current_pc <= current_pc + 1;
-                        end
+                        current_pc <= next_pc;
                     end
 
-                    // todo, add branch write-back
 
                     if ((mem_xfer & mem_do_rinst)) begin
                         mem_do_rinst <= 0;
@@ -372,6 +447,7 @@ module cpu_core (
                 cpu_state_ld_rs1: begin
                     // make sure cpu_state_ld_rs1 happen after fully decoding
                     if (decoder_done) begin
+                        next_pc <= next_pc + 4;
                         cpu_state <= cpu_state_fetch;
                     end
 
