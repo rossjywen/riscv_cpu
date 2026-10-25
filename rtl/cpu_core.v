@@ -71,24 +71,32 @@ module cpu_core (
 	reg instr_getq, instr_setq, instr_retirq, instr_maskirq, instr_waitirq, instr_timer;
 	//wire instr_trap;
 
+    wire is_lui_auipc_jal =
+        |{instr_lui, instr_auipc, instr_jal};
+    wire is_lui_auipc_jal_jalr_addi_add_sub =
+        |{instr_lui, instr_auipc, instr_jal, instr_jalr, instr_addi, instr_add, instr_sub};
+    wire is_slti_blt_slt =
+        |{instr_slti, instr_blt, instr_slt};
+    wire is_sltiu_bltu_sltu =
+        |{instr_sltiu, instr_bltu, instr_sltu};
+    wire is_lbu_lhu_lw =
+        |{instr_lbu, instr_lhu, instr_lw};
+    wire is_compare =
+        |{is_beq_bne_blt_bge_bltu_bgeu, instr_slti, instr_slt, instr_sltiu, instr_sltu};
+
+
 	reg [4:0] decoded_rd, decoded_rs1;
 	reg [4:0] decoded_rs2;
 	reg [31:0] decoded_imm, decoded_imm_j;
 
-	reg is_lui_auipc_jal;
 	reg is_lb_lh_lw_lbu_lhu;
 	reg is_slli_srli_srai;
 	reg is_jalr_addi_slti_sltiu_xori_ori_andi;
 	reg is_sb_sh_sw;
 	reg is_sll_srl_sra;
-	reg is_lui_auipc_jal_jalr_addi_add_sub;
-	reg is_slti_blt_slt;
-	reg is_sltiu_bltu_sltu;
 	reg is_beq_bne_blt_bge_bltu_bgeu;
-	reg is_lbu_lhu_lw;
 	reg is_alu_reg_imm;
 	reg is_alu_reg_reg;
-	reg is_compare;
 
 
     // decorder module
@@ -98,7 +106,6 @@ module cpu_core (
             decoder_done <= 0;
 
             is_beq_bne_blt_bge_bltu_bgeu <= 0;
-            is_compare <= 0;
 
             instr_beq   <= 0;
             instr_bne   <= 0;
@@ -129,14 +136,6 @@ module cpu_core (
 
         end else begin
             decoder_done <= 0;
-
-            is_lui_auipc_jal <= |{instr_lui, instr_auipc, instr_jal};
-            is_lui_auipc_jal_jalr_addi_add_sub <= |{instr_lui, instr_auipc, instr_jal, instr_jalr, instr_addi, instr_add, instr_sub};
-            is_slti_blt_slt <= |{instr_slti, instr_blt, instr_slt};
-            is_sltiu_bltu_sltu <= |{instr_sltiu, instr_bltu, instr_sltu};
-            is_lbu_lhu_lw <= |{instr_lbu, instr_lhu, instr_lw};
-            is_compare <= |{is_beq_bne_blt_bge_bltu_bgeu, instr_slti, instr_slt, instr_sltiu, instr_sltu};
-
 
             // this is 1-st decode stage
             if (mem_xfer & mem_do_rinst) begin
@@ -251,9 +250,6 @@ module cpu_core (
                     mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0100000
                 };
                 
-                // todo, idk why
-                is_lui_auipc_jal_jalr_addi_add_sub <= 0;
-                is_compare <= 0;
 
                 case (1'b1)
                     instr_jal:
@@ -349,9 +345,8 @@ module cpu_core (
     wire [31:0] cpuregs_rs2 = decoded_rs2 ? cpuregs[decoded_rs2] : 0;
 
 
-	reg [31:0] alu_out, alu_out_q;
-	reg alu_out_0, alu_out_0_q;
-	reg alu_wait, alu_wait_2;
+	reg [31:0] alu_out;
+	reg alu_out_0;
 
 	reg [31:0] alu_add_sub;
 	reg [31:0] alu_shl, alu_shr;
@@ -367,8 +362,10 @@ module cpu_core (
         alu_shr = $signed({instr_sra || instr_srai ? reg_op1[31] : 1'b0, reg_op1}) >>> reg_op2[4:0];
     end
 
+
 	always @* begin
 		alu_out_0 = 'bx;
+        // for conditional branch instructions
 		case (1'b1)
 			instr_beq:
 				alu_out_0 = alu_eq;
@@ -405,14 +402,13 @@ module cpu_core (
 
 
 
-	// localparam cpu_state_trap   = 8'b10000000;
 	localparam cpu_state_fetch  = 3'd0;
-	localparam cpu_state_ld_rs1 = 3'd1;
-	localparam cpu_state_ld_rs2 = 3'd2;
-	localparam cpu_state_exec   = 3'd3;
-	// localparam cpu_state_shift  = 8'b00000100;
-	// localparam cpu_state_stmem  = 8'b00000010;
-	// localparam cpu_state_ldmem  = 8'b00000001;
+	localparam cpu_state_ld_rs = 3'd1;
+	localparam cpu_state_exec   = 3'd2;
+	// localparam cpu_state_stmem  = 3'd3;
+	// localparam cpu_state_ldmem  = 3'd4;
+	// localparam cpu_state_trap   = 3'd5;
+
     integer i;
 
     // cpu module
@@ -437,20 +433,71 @@ module cpu_core (
                         current_pc <= next_pc;
                     end
 
-
+                    // this means having fetched instruction
                     if ((mem_xfer & mem_do_rinst)) begin
                         mem_do_rinst <= 0;
-                        cpu_state <= cpu_state_ld_rs1;
+                        cpu_state <= cpu_state_ld_rs;
                     end
                 end
 
-                cpu_state_ld_rs1: begin
-                    // make sure cpu_state_ld_rs1 happen after fully decoding
+                cpu_state_ld_rs: begin
+                    // make sure cpu_state_ld_rs happen after fully decoding
                     if (decoder_done) begin
                         next_pc <= next_pc + 4;
                         cpu_state <= cpu_state_fetch;
-                    end
 
+                        case (1'b1)
+                            is_lui_auipc_jal: begin
+                                reg_op1 <= instr_lui ? 0 : next_pc;
+                                reg_op2 <= decoded_imm;
+                                cpu_state <= cpu_state_exec;
+                            end
+
+                            // is_lb_lh_lw_lbu_lhu && !instr_trap: begin
+                            //     `debug($display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);)
+                            //     reg_op1 <= cpuregs_rs1;
+                            //     // dbg_rs1val <= cpuregs_rs1;
+                            //     // dbg_rs1val_valid <= 1;
+                            //     cpu_state <= cpu_state_ldmem;
+                            // end
+
+                            is_jalr_addi_slti_sltiu_xori_ori_andi, is_slli_srli_srai: begin
+                                $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
+                                reg_op1 <= cpuregs_rs1;
+                                // dbg_rs1val <= cpuregs_rs1;
+                                // dbg_rs1val_valid <= 1;
+                                reg_op2 <= is_slli_srli_srai ? decoded_rs2 : decoded_imm;
+                                cpu_state <= cpu_state_exec;
+                            end
+
+                            default: begin
+                                $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
+                                reg_op1 <= cpuregs_rs1;
+                                // dbg_rs1val <= cpuregs_rs1;
+                                // dbg_rs1val_valid <= 1;
+                                $display("LD_RS2: %2d 0x%08x", decoded_rs2, cpuregs_rs2);
+                                // reg_sh <= cpuregs_rs2;
+                                reg_op2 <= cpuregs_rs2;
+                                // dbg_rs2val <= cpuregs_rs2;
+                                // dbg_rs2val_valid <= 1;
+
+                                // case (1'b1)
+                                //     is_sb_sh_sw: begin
+                                //         cpu_state <= cpu_state_stmem;
+                                //     end
+                                //     default: begin
+                                        cpu_state <= cpu_state_exec;
+                                //     end
+                                // endcase
+                            end
+
+                        endcase
+
+                    end
+                end
+
+                cpu_state_exec: begin
+                    cpu_state <= cpu_state_fetch;
                 end
             endcase
         end
