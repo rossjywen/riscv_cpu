@@ -5,7 +5,9 @@ module cpu_core (
     input wire          mem_ready,
     input wire [31:0]   mem_data,
     output reg          mem_valid,
-    output reg [29:0]   mem_addr   // aligned to 4 bytes
+    output reg [29:0]   mem_addr,   // aligned to 4 bytes
+    output reg [31:0] mem_wdata,
+    output reg [3:0]  mem_wstrb
 );
  
     localparam MEM_IDLE = 2'b01;
@@ -37,19 +39,47 @@ module cpu_core (
             mem_state <= MEM_IDLE;
             mem_valid <= 1'b0;
             mem_addr <= 30'b0;
+            mem_wdata <= 32'b0;
+            mem_wstrb <= 4'b0;
         end else begin
             case (mem_state)
                 MEM_IDLE: begin
-                    if (mem_do_rinst) begin
-                        mem_valid <= 1'b1;
-                        mem_state <= MEM_WAIT;
-                        mem_addr <= current_pc[31:2];
-                    end
+                    case (1'b1) 
+                        mem_do_rinst: begin
+                            mem_valid <= 1'b1;
+                            mem_addr <= current_pc[31:2];
+                            mem_wdata <= 32'b0;
+                            mem_wstrb <= 4'b0;
+                            mem_state <= MEM_WAIT;
+                        end
+
+                        mem_do_rdata: begin
+                            mem_valid <= 1'b1;
+                            mem_addr <= alu_out[31:2];
+                            mem_wdata <= 32'b0;
+                            mem_wstrb <= 4'b0;
+                            mem_state <= MEM_WAIT;                           
+                        end
+
+                        mem_do_wdata: begin
+                            mem_valid <= 1'b1;
+                            mem_addr <= alu_out[31:2];
+                            mem_wdata <= store_data << {alu_out[1:0], 3'b000};
+                            if (instr_sb)
+                                mem_wstrb <= 4'b0001 << alu_out[1:0];
+                            else if (instr_sh)
+                                mem_wstrb <= 4'b0011 << alu_out[1:0];
+                            else
+                                mem_wstrb <= 4'b1111;
+                            mem_state <= MEM_WAIT;                                                       
+                        end
+                    endcase
                 end
                 MEM_WAIT: begin
                     if (mem_xfer) begin
                         mem_data_q <= mem_data;
                         mem_valid <= 0;
+                        mem_wstrb <= 4'b0;
                         mem_state <= MEM_IDLE;
                         $display("memory data: %08h", mem_data);
                     end
@@ -90,9 +120,10 @@ module cpu_core (
 	reg [31:0] decoded_imm, decoded_imm_j;
 
 	reg is_lb_lh_lw_lbu_lhu;
+	reg is_sb_sh_sw;
+
 	reg is_slli_srli_srai;
 	reg is_jalr_addi_slti_sltiu_xori_ori_andi;
-	reg is_sb_sh_sw;
 	reg is_sll_srl_sra;
 	reg is_beq_bne_blt_bge_bltu_bgeu;
 	reg is_alu_reg_imm;
@@ -385,7 +416,13 @@ module cpu_core (
 
 	//reg [63:0] count_cycle, count_instr;
 	reg [31:0] reg_op1, reg_op2;
-	//reg [4:0] reg_sh;
+    reg [31:0] store_data;
+    wire [31:0] load_shifted = mem_data >> {alu_out[1:0], 3'b000};
+    reg [31:0] load_result;
+
+    wire data_misaligned =
+        ((instr_lh || instr_lhu || instr_sh) && alu_out[0]) ||
+        ((instr_lw || instr_sw) && (alu_out[1:0] != 2'b00));
 
 
     wire [31:0] cpuregs_rs1 = decoded_rs1 ? cpuregs[decoded_rs1] : 0;
@@ -430,7 +467,9 @@ module cpu_core (
 
 		alu_out = 'bx;
 		case (1'b1)
-			is_lui_auipc_jal_jalr_addi_add_sub:
+			is_lui_auipc_jal_jalr_addi_add_sub ||
+            is_lb_lh_lw_lbu_lhu ||
+            is_sb_sh_sw:
 				alu_out = alu_add_sub;
 			is_compare:
 				alu_out = alu_out_0;
@@ -448,12 +487,34 @@ module cpu_core (
     end
 
 
+    always @* begin
+        case (1'b1)
+            instr_lb:
+                load_result = {{24{load_shifted[7]}}, load_shifted[7:0]};
+
+            instr_lbu:
+                load_result = {24'b0, load_shifted[7:0]};
+
+            instr_lh:
+                load_result = {{16{load_shifted[15]}}, load_shifted[15:0]};
+
+            instr_lhu:
+                load_result = {16'b0, load_shifted[15:0]};
+
+            instr_lw:
+                load_result = mem_data;
+
+            default:
+                load_result = 32'bx;
+        endcase
+    end
+
 
 	localparam cpu_state_fetch  = 3'd0;
 	localparam cpu_state_ld_rs = 3'd1;
 	localparam cpu_state_exec   = 3'd2;
-	// localparam cpu_state_stmem  = 3'd3;
-	// localparam cpu_state_ldmem  = 3'd4;
+	localparam cpu_state_stmem  = 3'd3;
+	localparam cpu_state_ldmem  = 3'd4;
 	localparam cpu_state_trap   = 3'd5;
 
     integer i;
@@ -468,6 +529,9 @@ module cpu_core (
             cpu_state <= cpu_state_fetch;
 
             mem_do_rinst <= 0;
+            mem_do_rdata <= 0;
+            mem_do_wdata <= 0;
+            store_data <= 32'b0;
             
             for (i = 0; i < 32; i = i + 1) begin
                 cpuregs[i] <= 32'd0;
@@ -500,14 +564,6 @@ module cpu_core (
                                 cpu_state <= cpu_state_exec;
                             end
 
-                            // is_lb_lh_lw_lbu_lhu && !instr_trap: begin
-                            //     `debug($display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);)
-                            //     reg_op1 <= cpuregs_rs1;
-                            //     // dbg_rs1val <= cpuregs_rs1;
-                            //     // dbg_rs1val_valid <= 1;
-                            //     cpu_state <= cpu_state_ldmem;
-                            // end
-
                             is_jalr_addi_slti_sltiu_xori_ori_andi, is_slli_srli_srai: begin
                                 $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
                                 reg_op1 <= cpuregs_rs1;
@@ -515,6 +571,22 @@ module cpu_core (
                                 // dbg_rs1val_valid <= 1;
                                 reg_op2 <= is_slli_srli_srai ? decoded_rs2 : decoded_imm;
                                 cpu_state <= cpu_state_exec;
+                            end
+
+                            is_lb_lh_lw_lbu_lhu: begin
+                                $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
+                                reg_op1 <= cpuregs_rs1;
+                                reg_op2 <= decoded_imm;
+                                // dbg_rs1val <= cpuregs_rs1;
+                                // dbg_rs1val_valid <= 1;
+                                cpu_state <= cpu_state_ldmem;
+                            end
+
+                            is_sb_sh_sw: begin
+                                reg_op1 <= cpuregs_rs1;
+                                reg_op2 <= decoded_imm;
+                                store_data <= cpuregs_rs2;
+                                cpu_state <= cpu_state_stmem;
                             end
 
                             // all the instructions using rs1 and rs2 as parameters
@@ -609,8 +681,49 @@ module cpu_core (
                     endcase
                 end
 
+                cpu_state_ldmem: begin
+                    if (data_misaligned) begin
+                        cpu_state <= cpu_state_trap;
+                    end else begin
+                        // Request a data read
+                        if (!mem_do_rdata) begin
+                            mem_do_rdata <= 1'b1;
+                        end
+
+                        // Memory read completed
+                        if (mem_xfer && mem_do_rdata) begin
+                            mem_do_rdata <= 1'b0;
+
+                            if (decoded_rd != 5'd0) begin
+                                cpuregs[decoded_rd] <= load_result;
+                            end
+
+                            cpu_state <= cpu_state_fetch;
+                        end
+                    end                   
+                end
+
+                cpu_state_stmem: begin
+                    if (data_misaligned) begin
+                        cpu_state <= cpu_state_trap;
+                    end else begin
+                        // Request a data write
+                        if (!mem_do_wdata) begin
+                            mem_do_wdata <= 1'b1;
+                        end
+
+                        // Memory write completed
+                        if (mem_xfer && mem_do_wdata) begin
+                            mem_do_wdata <= 1'b0;
+                            cpu_state <= cpu_state_fetch;
+                        end
+                    end                    
+                end
+
                 cpu_state_trap: begin
                     mem_do_rinst <= 0;
+                    mem_do_rdata <= 0;
+                    mem_do_wdata <= 0;
                     cpu_state <= cpu_state_trap;
                 end
             endcase

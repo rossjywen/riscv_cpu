@@ -19,6 +19,8 @@ module tb_bram;
         .rst_n (rst_n),
         .valid (valid),
         .addr  (addr),
+        .wstrb (4'b0),
+        .wdata (32'b0)
         .ready (ready),
         .data  (data)
     );
