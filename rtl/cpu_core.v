@@ -105,6 +105,29 @@ module cpu_core (
             decoder_1_stage <= 0;
             decoder_done <= 0;
 
+            // U-type and Jump
+            instr_lui   <= 0;
+            instr_auipc <= 0;
+            instr_jal   <= 0;
+            instr_jalr  <= 0;
+
+            // Load
+            instr_lb    <= 0;
+            instr_lh    <= 0;
+            instr_lw    <= 0;
+            instr_lbu   <= 0;
+            instr_lhu   <= 0;
+
+            // Store
+            instr_sb    <= 0;
+            instr_sh    <= 0;
+            instr_sw    <= 0;
+
+            // Immediate Shift
+            instr_slli  <= 0;
+            instr_srli  <= 0;
+            instr_srai  <= 0;
+
             is_beq_bne_blt_bge_bltu_bgeu <= 0;
 
             instr_beq   <= 0;
@@ -133,6 +156,30 @@ module cpu_core (
             instr_and   <= 0;
 
             instr_fence <= 0;
+
+            // Counter / System
+            instr_rdcycle   <= 0;
+            instr_rdcycleh  <= 0;
+            instr_rdinstr   <= 0;
+            instr_rdinstrh  <= 0;
+            instr_ecall_ebreak <= 0;
+
+            // PicoRV32 Custom IRQ Instructions
+            instr_getq    <= 0;
+            instr_setq    <= 0;
+            instr_retirq  <= 0;
+            instr_maskirq <= 0;
+            instr_waitirq <= 0;
+            instr_timer   <= 0;
+
+            is_lb_lh_lw_lbu_lhu <= 0;
+            is_sb_sh_sw <= 0;
+            is_alu_reg_imm <= 0;
+            is_alu_reg_reg <= 0;
+
+            is_slli_srli_srai <= 0;
+            is_jalr_addi_slti_sltiu_xori_ori_andi <= 0;
+            is_sll_srl_sra <= 0;
 
         end else begin
             decoder_done <= 0;
@@ -337,7 +384,7 @@ module cpu_core (
     reg [31:0] cpuregs [0:31];
 
 	//reg [63:0] count_cycle, count_instr;
-	reg [31:0] reg_op1, reg_op2, reg_out;
+	reg [31:0] reg_op1, reg_op2;
 	//reg [4:0] reg_sh;
 
 
@@ -407,7 +454,7 @@ module cpu_core (
 	localparam cpu_state_exec   = 3'd2;
 	// localparam cpu_state_stmem  = 3'd3;
 	// localparam cpu_state_ldmem  = 3'd4;
-	// localparam cpu_state_trap   = 3'd5;
+	localparam cpu_state_trap   = 3'd5;
 
     integer i;
 
@@ -448,7 +495,7 @@ module cpu_core (
 
                         case (1'b1)
                             is_lui_auipc_jal: begin
-                                reg_op1 <= instr_lui ? 0 : next_pc;
+                                reg_op1 <= instr_lui ? 32'd0 : current_pc;
                                 reg_op2 <= decoded_imm;
                                 cpu_state <= cpu_state_exec;
                             end
@@ -470,25 +517,18 @@ module cpu_core (
                                 cpu_state <= cpu_state_exec;
                             end
 
+                            // all the instructions using rs1 and rs2 as parameters
+                            // R-type ALU: ADD, SUB, SLL, SLTU, XOR, SRL, SRA, OR, AND
+                            // Branch: BEQ, BNE, BLT, BGE, BLTU, BGEU
+                            // those don't need any ALU Operand: FENCE
+                            // todo this can be sorted out
                             default: begin
                                 $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
                                 reg_op1 <= cpuregs_rs1;
-                                // dbg_rs1val <= cpuregs_rs1;
-                                // dbg_rs1val_valid <= 1;
                                 $display("LD_RS2: %2d 0x%08x", decoded_rs2, cpuregs_rs2);
-                                // reg_sh <= cpuregs_rs2;
                                 reg_op2 <= cpuregs_rs2;
-                                // dbg_rs2val <= cpuregs_rs2;
-                                // dbg_rs2val_valid <= 1;
 
-                                // case (1'b1)
-                                //     is_sb_sh_sw: begin
-                                //         cpu_state <= cpu_state_stmem;
-                                //     end
-                                //     default: begin
-                                        cpu_state <= cpu_state_exec;
-                                //     end
-                                // endcase
+                                cpu_state <= cpu_state_exec;
                             end
 
                         endcase
@@ -497,7 +537,81 @@ module cpu_core (
                 end
 
                 cpu_state_exec: begin
-                    cpu_state <= cpu_state_fetch;
+                    case (1'b1)
+                        // LUI, AUIPC, ALU arithmetic, logic, compare, shift
+                        instr_lui || instr_auipc ||
+                        instr_addi || instr_slti || instr_sltiu ||
+                        instr_xori || instr_ori || instr_andi ||
+                        instr_slli || instr_srli || instr_srai ||
+                        instr_add || instr_sub || instr_sll ||
+                        instr_slt || instr_sltu || instr_xor ||
+                        instr_srl || instr_sra || instr_or || instr_and: begin
+
+                            if (decoded_rd != 5'd0)
+                                cpuregs[decoded_rd] <= alu_out;
+
+                            cpu_state <= cpu_state_fetch;
+                        end
+
+                        // JAL
+                        instr_jal: begin
+                            if (alu_out[1:0] != 2'b00) begin
+                                cpu_state <= cpu_state_trap;
+                            end else begin
+                                if (decoded_rd != 5'd0)
+                                    cpuregs[decoded_rd] <= current_pc + 32'd4;
+
+                                next_pc <= alu_out;
+                                cpu_state <= cpu_state_fetch;
+                            end
+                        end
+
+                        // JALR
+                        instr_jalr: begin
+                            // COMPRESSED_ISA isn't supported now
+                            if (alu_out[1]) begin
+                                cpu_state <= cpu_state_trap;
+                            end else begin
+                                if (decoded_rd != 5'd0)
+                                    cpuregs[decoded_rd] <= current_pc + 32'd4;
+
+                                next_pc <= alu_out & 32'hfffffffe;
+                                cpu_state <= cpu_state_fetch;
+                            end
+                        end
+
+                        // Conditional Branch
+                        instr_beq || instr_bne ||
+                        instr_blt || instr_bge ||
+                        instr_bltu || instr_bgeu: begin
+
+                            if (alu_out_0) begin
+                                if ((current_pc + decoded_imm) & 32'h2)
+                                    cpu_state <= cpu_state_trap;
+                                else begin
+                                    next_pc <= current_pc + decoded_imm;
+                                    cpu_state <= cpu_state_fetch;
+                                end
+                            end else begin
+                                cpu_state <= cpu_state_fetch;
+                            end
+                        end
+
+                        // FENCE
+                        instr_fence: begin
+                            cpu_state <= cpu_state_fetch;
+                        end
+
+                        // Illegal / Unsupported Instruction
+                        default: begin
+                            cpu_state <= cpu_state_trap;
+                        end
+                    endcase
+                end
+
+                cpu_state_trap: begin
+                    mem_do_rinst <= 0;
+                    cpu_state <= cpu_state_trap;
                 end
             endcase
         end
