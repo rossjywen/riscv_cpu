@@ -9,31 +9,17 @@ module cpu_core (
     output reg [31:0] mem_wdata,
     output reg [3:0]  mem_wstrb
 );
- 
+
+    // Memory interface
     localparam MEM_IDLE = 2'b01;
     localparam MEM_WAIT = 2'b10;
 
-    // fsm
     reg [1:0] mem_state;
-    reg [2:0] cpu_state;
+    reg [31:0] instr_word;
 
-    // memory operation from fetch module
-    reg mem_do_rinst;
-    reg mem_do_rdata;
-    reg mem_do_wdata;
+    // Handshake completion: valid and ready sampled together
+    wire mem_xfer = mem_ready & mem_valid;
 
-    wire mem_xfer;
-    assign mem_xfer = mem_ready & mem_valid;
-
-    reg [31:0] mem_data_q;
-
-
-    // pc
-    reg [31:0] current_pc;
-    reg [31:0] next_pc;
-
-
-    // memory interface
     always @(posedge clk) begin
         if (!rst_n) begin
             mem_state <= MEM_IDLE;
@@ -44,8 +30,8 @@ module cpu_core (
         end else begin
             case (mem_state)
                 MEM_IDLE: begin
-                    case (1'b1) 
-                        mem_do_rinst: begin
+                    case (1'b1)
+                        mem_req_instr: begin
                             mem_valid <= 1'b1;
                             mem_addr <= current_pc[31:2];
                             mem_wdata <= 32'b0;
@@ -53,84 +39,76 @@ module cpu_core (
                             mem_state <= MEM_WAIT;
                         end
 
-                        mem_do_rdata: begin
+                        mem_req_load: begin
                             mem_valid <= 1'b1;
                             mem_addr <= alu_out[31:2];
                             mem_wdata <= 32'b0;
                             mem_wstrb <= 4'b0;
-                            mem_state <= MEM_WAIT;                           
+                            mem_state <= MEM_WAIT;
                         end
 
-                        mem_do_wdata: begin
+                        mem_req_store: begin
                             mem_valid <= 1'b1;
                             mem_addr <= alu_out[31:2];
-                            mem_wdata <= store_data << {alu_out[1:0], 3'b000};
+                            mem_wdata <= mem_store_data << {alu_out[1:0], 3'b000};
                             if (instr_sb)
                                 mem_wstrb <= 4'b0001 << alu_out[1:0];
                             else if (instr_sh)
                                 mem_wstrb <= 4'b0011 << alu_out[1:0];
                             else
                                 mem_wstrb <= 4'b1111;
-                            mem_state <= MEM_WAIT;                                                       
+                            mem_state <= MEM_WAIT;
                         end
                     endcase
                 end
                 MEM_WAIT: begin
                     if (mem_xfer) begin
-                        mem_data_q <= mem_data;
+                        if (mem_req_instr) begin
+                            instr_word <= mem_data;
+                        end
+
                         mem_valid <= 0;
                         mem_wstrb <= 4'b0;
                         mem_state <= MEM_IDLE;
-                        $display("memory data: %08h", mem_data);
+
+`ifndef SYNTHESIS
+                        if (mem_req_instr || mem_req_load)
+                            $display("Memory read: data=%08h", mem_data);
+
+                        if (mem_req_store)
+                            $display("Memory write: addr=%08h data=%08h strb=%b",
+                                    {mem_addr, 2'b00}, mem_wdata, mem_wstrb);
+`endif
                     end
                 end
             endcase
         end
     end
 
-
+    // Instruction decoder
     reg decoder_1_stage;
     reg decoder_done;
 
+    // Stage 1: opcode classification for use inside the decoder only
+	reg predecode_load;
+	reg predecode_store;
+	reg predecode_branch;
+	reg predecode_alu_imm;
+	reg predecode_alu_reg;
+
+    // Decoded instruction flags
     reg instr_lui, instr_auipc, instr_jal, instr_jalr;
 	reg instr_beq, instr_bne, instr_blt, instr_bge, instr_bltu, instr_bgeu;
 	reg instr_lb, instr_lh, instr_lw, instr_lbu, instr_lhu, instr_sb, instr_sh, instr_sw;
 	reg instr_addi, instr_slti, instr_sltiu, instr_xori, instr_ori, instr_andi, instr_slli, instr_srli, instr_srai;
 	reg instr_add, instr_sub, instr_sll, instr_slt, instr_sltu, instr_xor, instr_srl, instr_sra, instr_or, instr_and;
-	reg instr_rdcycle, instr_rdcycleh, instr_rdinstr, instr_rdinstrh, instr_ecall_ebreak, instr_fence;
-	reg instr_getq, instr_setq, instr_retirq, instr_maskirq, instr_waitirq, instr_timer;
-	//wire instr_trap;
+    reg instr_fence;
 
-    wire is_lui_auipc_jal =
-        |{instr_lui, instr_auipc, instr_jal};
-    wire is_lui_auipc_jal_jalr_addi_add_sub =
-        |{instr_lui, instr_auipc, instr_jal, instr_jalr, instr_addi, instr_add, instr_sub};
-    wire is_slti_blt_slt =
-        |{instr_slti, instr_blt, instr_slt};
-    wire is_sltiu_bltu_sltu =
-        |{instr_sltiu, instr_bltu, instr_sltu};
-    wire is_lbu_lhu_lw =
-        |{instr_lbu, instr_lhu, instr_lw};
-    wire is_compare =
-        |{is_beq_bne_blt_bge_bltu_bgeu, instr_slti, instr_slt, instr_sltiu, instr_sltu};
-
-
+    // Decoded operand indices and immediate values
 	reg [4:0] decoded_rd, decoded_rs1;
 	reg [4:0] decoded_rs2;
 	reg [31:0] decoded_imm, decoded_imm_j;
 
-	reg is_lb_lh_lw_lbu_lhu;
-	reg is_sb_sh_sw;
-
-	reg is_slli_srli_srai;
-	reg is_jalr_addi_slti_sltiu_xori_ori_andi;
-	reg is_sll_srl_sra;
-	reg is_beq_bne_blt_bge_bltu_bgeu;
-	reg is_alu_reg_imm;
-	reg is_alu_reg_reg;
-
-
-    // decorder module
     always @(posedge clk) begin
         if (!rst_n) begin
             decoder_1_stage <= 0;
@@ -159,7 +137,7 @@ module cpu_core (
             instr_srli  <= 0;
             instr_srai  <= 0;
 
-            is_beq_bne_blt_bge_bltu_bgeu <= 0;
+            predecode_branch <= 0;
 
             instr_beq   <= 0;
             instr_bne   <= 0;
@@ -188,49 +166,28 @@ module cpu_core (
 
             instr_fence <= 0;
 
-            // Counter / System
-            instr_rdcycle   <= 0;
-            instr_rdcycleh  <= 0;
-            instr_rdinstr   <= 0;
-            instr_rdinstrh  <= 0;
-            instr_ecall_ebreak <= 0;
-
-            // PicoRV32 Custom IRQ Instructions
-            instr_getq    <= 0;
-            instr_setq    <= 0;
-            instr_retirq  <= 0;
-            instr_maskirq <= 0;
-            instr_waitirq <= 0;
-            instr_timer   <= 0;
-
-            is_lb_lh_lw_lbu_lhu <= 0;
-            is_sb_sh_sw <= 0;
-            is_alu_reg_imm <= 0;
-            is_alu_reg_reg <= 0;
-
-            is_slli_srli_srai <= 0;
-            is_jalr_addi_slti_sltiu_xori_ori_andi <= 0;
-            is_sll_srl_sra <= 0;
+            predecode_load <= 0;
+            predecode_store <= 0;
+            predecode_alu_imm <= 0;
+            predecode_alu_reg <= 0;
 
         end else begin
             decoder_done <= 0;
 
             // this is 1-st decode stage
-            if (mem_xfer & mem_do_rinst) begin
+            if (mem_xfer & mem_req_instr) begin
                 decoder_1_stage <= 1;
 
                 instr_lui     <= mem_data[6:0] == 7'b0110111;
                 instr_auipc   <= mem_data[6:0] == 7'b0010111;
                 instr_jal     <= mem_data[6:0] == 7'b1101111;
                 instr_jalr    <= mem_data[6:0] == 7'b1100111 && mem_data[14:12] == 3'b000;
-                //instr_retirq  <= mem_data[6:0] == 7'b0001011 && mem_data[31:25] == 7'b0000010 && ENABLE_IRQ;
-                //instr_waitirq <= mem_data[6:0] == 7'b0001011 && mem_data[31:25] == 7'b0000100 && ENABLE_IRQ;
 
-                is_beq_bne_blt_bge_bltu_bgeu <= mem_data[6:0] == 7'b1100011;
-                is_lb_lh_lw_lbu_lhu          <= mem_data[6:0] == 7'b0000011;
-                is_sb_sh_sw                  <= mem_data[6:0] == 7'b0100011;
-                is_alu_reg_imm               <= mem_data[6:0] == 7'b0010011;
-                is_alu_reg_reg               <= mem_data[6:0] == 7'b0110011;
+                predecode_branch        <= mem_data[6:0] == 7'b1100011;
+                predecode_load          <= mem_data[6:0] == 7'b0000011;
+                predecode_store         <= mem_data[6:0] == 7'b0100011;
+                predecode_alu_imm       <= mem_data[6:0] == 7'b0010011;
+                predecode_alu_reg       <= mem_data[6:0] == 7'b0110011;
 
                 // this is for J-type
                 { decoded_imm_j[31:20], decoded_imm_j[10:1], decoded_imm_j[11], decoded_imm_j[19:12], decoded_imm_j[0] } <= $signed({mem_data[31:12], 1'b0});
@@ -238,108 +195,65 @@ module cpu_core (
                 decoded_rd <= mem_data[11:7];
                 decoded_rs1 <= mem_data[19:15];
                 decoded_rs2 <= mem_data[24:20];
-
-                // if (mem_data[6:0] == 7'b0001011 && mem_data[31:25] == 7'b0000000 && ENABLE_IRQ && ENABLE_IRQ_QREGS)
-                // 	decoded_rs1[regindex_bits-1] <= 1; // instr_getq
-
-                // if (mem_data[6:0] == 7'b0001011 && mem_data[31:25] == 7'b0000010 && ENABLE_IRQ)
-                // 	decoded_rs1 <= ENABLE_IRQ_QREGS ? irqregs_offset : 3; // instr_retirq
             end
-
 
             // this is 2-nd decode stage
             if (decoder_1_stage) begin
                 decoder_1_stage <= 0;
                 decoder_done <= 1;
 
-                instr_beq   <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b000;
-                instr_bne   <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b001;
-                instr_blt   <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b100;
-                instr_bge   <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b101;
-                instr_bltu  <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b110;
-                instr_bgeu  <= is_beq_bne_blt_bge_bltu_bgeu && mem_data_q[14:12] == 3'b111;
+                instr_beq   <= predecode_branch && instr_word[14:12] == 3'b000;
+                instr_bne   <= predecode_branch && instr_word[14:12] == 3'b001;
+                instr_blt   <= predecode_branch && instr_word[14:12] == 3'b100;
+                instr_bge   <= predecode_branch && instr_word[14:12] == 3'b101;
+                instr_bltu  <= predecode_branch && instr_word[14:12] == 3'b110;
+                instr_bgeu  <= predecode_branch && instr_word[14:12] == 3'b111;
 
-                instr_lb    <= is_lb_lh_lw_lbu_lhu && mem_data_q[14:12] == 3'b000;
-                instr_lh    <= is_lb_lh_lw_lbu_lhu && mem_data_q[14:12] == 3'b001;
-                instr_lw    <= is_lb_lh_lw_lbu_lhu && mem_data_q[14:12] == 3'b010;
-                instr_lbu   <= is_lb_lh_lw_lbu_lhu && mem_data_q[14:12] == 3'b100;
-                instr_lhu   <= is_lb_lh_lw_lbu_lhu && mem_data_q[14:12] == 3'b101;
+                instr_lb    <= predecode_load && instr_word[14:12] == 3'b000;
+                instr_lh    <= predecode_load && instr_word[14:12] == 3'b001;
+                instr_lw    <= predecode_load && instr_word[14:12] == 3'b010;
+                instr_lbu   <= predecode_load && instr_word[14:12] == 3'b100;
+                instr_lhu   <= predecode_load && instr_word[14:12] == 3'b101;
 
-                instr_sb    <= is_sb_sh_sw && mem_data_q[14:12] == 3'b000;
-                instr_sh    <= is_sb_sh_sw && mem_data_q[14:12] == 3'b001;
-                instr_sw    <= is_sb_sh_sw && mem_data_q[14:12] == 3'b010;
+                instr_sb    <= predecode_store && instr_word[14:12] == 3'b000;
+                instr_sh    <= predecode_store && instr_word[14:12] == 3'b001;
+                instr_sw    <= predecode_store && instr_word[14:12] == 3'b010;
 
-                instr_addi  <= is_alu_reg_imm && mem_data_q[14:12] == 3'b000;
-                instr_slti  <= is_alu_reg_imm && mem_data_q[14:12] == 3'b010;
-                instr_sltiu <= is_alu_reg_imm && mem_data_q[14:12] == 3'b011;
-                instr_xori  <= is_alu_reg_imm && mem_data_q[14:12] == 3'b100;
-                instr_ori   <= is_alu_reg_imm && mem_data_q[14:12] == 3'b110;
-                instr_andi  <= is_alu_reg_imm && mem_data_q[14:12] == 3'b111;
+                instr_addi  <= predecode_alu_imm && instr_word[14:12] == 3'b000;
+                instr_slti  <= predecode_alu_imm && instr_word[14:12] == 3'b010;
+                instr_sltiu <= predecode_alu_imm && instr_word[14:12] == 3'b011;
+                instr_xori  <= predecode_alu_imm && instr_word[14:12] == 3'b100;
+                instr_ori   <= predecode_alu_imm && instr_word[14:12] == 3'b110;
+                instr_andi  <= predecode_alu_imm && instr_word[14:12] == 3'b111;
 
-                instr_slli  <= is_alu_reg_imm && mem_data_q[14:12] == 3'b001 && mem_data_q[31:25] == 7'b0000000;
-                instr_srli  <= is_alu_reg_imm && mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0000000;
-                instr_srai  <= is_alu_reg_imm && mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0100000;
+                instr_slli  <= predecode_alu_imm && instr_word[14:12] == 3'b001 && instr_word[31:25] == 7'b0000000;
+                instr_srli  <= predecode_alu_imm && instr_word[14:12] == 3'b101 && instr_word[31:25] == 7'b0000000;
+                instr_srai  <= predecode_alu_imm && instr_word[14:12] == 3'b101 && instr_word[31:25] == 7'b0100000;
 
-                instr_add   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b000 && mem_data_q[31:25] == 7'b0000000;
-                instr_sub   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b000 && mem_data_q[31:25] == 7'b0100000;
-                instr_sll   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b001 && mem_data_q[31:25] == 7'b0000000;
-                instr_slt   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b010 && mem_data_q[31:25] == 7'b0000000;
-                instr_sltu  <= is_alu_reg_reg && mem_data_q[14:12] == 3'b011 && mem_data_q[31:25] == 7'b0000000;
-                instr_xor   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b100 && mem_data_q[31:25] == 7'b0000000;
-                instr_srl   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0000000;
-                instr_sra   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0100000;
-                instr_or    <= is_alu_reg_reg && mem_data_q[14:12] == 3'b110 && mem_data_q[31:25] == 7'b0000000;
-                instr_and   <= is_alu_reg_reg && mem_data_q[14:12] == 3'b111 && mem_data_q[31:25] == 7'b0000000;
+                instr_add   <= predecode_alu_reg && instr_word[14:12] == 3'b000 && instr_word[31:25] == 7'b0000000;
+                instr_sub   <= predecode_alu_reg && instr_word[14:12] == 3'b000 && instr_word[31:25] == 7'b0100000;
+                instr_sll   <= predecode_alu_reg && instr_word[14:12] == 3'b001 && instr_word[31:25] == 7'b0000000;
+                instr_slt   <= predecode_alu_reg && instr_word[14:12] == 3'b010 && instr_word[31:25] == 7'b0000000;
+                instr_sltu  <= predecode_alu_reg && instr_word[14:12] == 3'b011 && instr_word[31:25] == 7'b0000000;
+                instr_xor   <= predecode_alu_reg && instr_word[14:12] == 3'b100 && instr_word[31:25] == 7'b0000000;
+                instr_srl   <= predecode_alu_reg && instr_word[14:12] == 3'b101 && instr_word[31:25] == 7'b0000000;
+                instr_sra   <= predecode_alu_reg && instr_word[14:12] == 3'b101 && instr_word[31:25] == 7'b0100000;
+                instr_or    <= predecode_alu_reg && instr_word[14:12] == 3'b110 && instr_word[31:25] == 7'b0000000;
+                instr_and   <= predecode_alu_reg && instr_word[14:12] == 3'b111 && instr_word[31:25] == 7'b0000000;
 
-                // instr_rdcycle  <= ((mem_data_q[6:0] == 7'b1110011 && mem_data_q[31:12] == 'b11000000000000000010) ||
-                //                 (mem_data_q[6:0] == 7'b1110011 && mem_data_q[31:12] == 'b11000000000100000010)) && ENABLE_COUNTERS;
-                // instr_rdcycleh <= ((mem_data_q[6:0] == 7'b1110011 && mem_data_q[31:12] == 'b11001000000000000010) ||
-                //                 (mem_data_q[6:0] == 7'b1110011 && mem_data_q[31:12] == 'b11001000000100000010)) && ENABLE_COUNTERS && ENABLE_COUNTERS64;
-                // instr_rdinstr  <=  (mem_data_q[6:0] == 7'b1110011 && mem_data_q[31:12] == 'b11000000001000000010) && ENABLE_COUNTERS;
-                // instr_rdinstrh <=  (mem_data_q[6:0] == 7'b1110011 && mem_data_q[31:12] == 'b11001000001000000010) && ENABLE_COUNTERS && ENABLE_COUNTERS64;
-
-                // instr_ecall_ebreak <= ((mem_data_q[6:0] == 7'b1110011 && !mem_data_q[31:21] && !mem_data_q[19:7]) ||
-                //         (COMPRESSED_ISA && mem_data_q[15:0] == 16'h9002));
-                instr_fence <= (mem_data_q[6:0] == 7'b0001111 && !mem_data_q[14:12]);
-
-                // instr_getq    <= mem_data_q[6:0] == 7'b0001011 && mem_data_q[31:25] == 7'b0000000 && ENABLE_IRQ && ENABLE_IRQ_QREGS;
-                // instr_setq    <= mem_data_q[6:0] == 7'b0001011 && mem_data_q[31:25] == 7'b0000001 && ENABLE_IRQ && ENABLE_IRQ_QREGS;
-                // instr_maskirq <= mem_data_q[6:0] == 7'b0001011 && mem_data_q[31:25] == 7'b0000011 && ENABLE_IRQ;
-                // instr_timer   <= mem_data_q[6:0] == 7'b0001011 && mem_data_q[31:25] == 7'b0000101 && ENABLE_IRQ && ENABLE_IRQ_TIMER;
-
-                is_slli_srli_srai <= is_alu_reg_imm && |{
-                    mem_data_q[14:12] == 3'b001 && mem_data_q[31:25] == 7'b0000000,
-                    mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0000000,
-                    mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0100000
-                };
-
-                is_jalr_addi_slti_sltiu_xori_ori_andi <= instr_jalr || is_alu_reg_imm && |{
-                    mem_data_q[14:12] == 3'b000,
-                    mem_data_q[14:12] == 3'b010,
-                    mem_data_q[14:12] == 3'b011,
-                    mem_data_q[14:12] == 3'b100,
-                    mem_data_q[14:12] == 3'b110,
-                    mem_data_q[14:12] == 3'b111
-                };
-
-                is_sll_srl_sra <= is_alu_reg_reg && |{
-                    mem_data_q[14:12] == 3'b001 && mem_data_q[31:25] == 7'b0000000,
-                    mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0000000,
-                    mem_data_q[14:12] == 3'b101 && mem_data_q[31:25] == 7'b0100000
-                };
-                
+                instr_fence <= (instr_word[6:0] == 7'b0001111 && !instr_word[14:12]);
 
                 case (1'b1)
                     instr_jal:
                         decoded_imm <= decoded_imm_j;
                     |{instr_lui, instr_auipc}:
-                        decoded_imm <= mem_data_q[31:12] << 12;
-                    |{instr_jalr, is_lb_lh_lw_lbu_lhu, is_alu_reg_imm}:
-                        decoded_imm <= $signed(mem_data_q[31:20]);
-                    is_beq_bne_blt_bge_bltu_bgeu:
-                        decoded_imm <= $signed({mem_data_q[31], mem_data_q[7], mem_data_q[30:25], mem_data_q[11:8], 1'b0});
-                    is_sb_sh_sw:
-                        decoded_imm <= $signed({mem_data_q[31:25], mem_data_q[11:7]});
+                        decoded_imm <= instr_word[31:12] << 12;
+                    |{instr_jalr, predecode_load, predecode_alu_imm}:
+                        decoded_imm <= $signed(instr_word[31:20]);
+                    predecode_branch:
+                        decoded_imm <= $signed({instr_word[31], instr_word[7], instr_word[30:25], instr_word[11:8], 1'b0});
+                    predecode_store:
+                        decoded_imm <= $signed({instr_word[31:25], instr_word[11:7]});
                     default:
                         decoded_imm <= 1'bx;
                 endcase
@@ -348,7 +262,7 @@ module cpu_core (
         end
     end
 
-    // decoder debug module
+    // Instruction name display
     reg [63:0] new_ascii_instr;
 
     always @* begin
@@ -395,121 +309,127 @@ module cpu_core (
 		if (instr_sra)      new_ascii_instr = "sra";
 		if (instr_or)       new_ascii_instr = "or";
 		if (instr_and)      new_ascii_instr = "and";
-
-		if (instr_rdcycle)  new_ascii_instr = "rdcycle";
-		if (instr_rdcycleh) new_ascii_instr = "rdcycleh";
-		if (instr_rdinstr)  new_ascii_instr = "rdinstr";
-		if (instr_rdinstrh) new_ascii_instr = "rdinstrh";
-		if (instr_fence)    new_ascii_instr = "fence";
-
-		if (instr_getq)     new_ascii_instr = "getq";
-		if (instr_setq)     new_ascii_instr = "setq";
-		if (instr_retirq)   new_ascii_instr = "retirq";
-		if (instr_maskirq)  new_ascii_instr = "maskirq";
-		if (instr_waitirq)  new_ascii_instr = "waitirq";
-		if (instr_timer)    new_ascii_instr = "timer";
 	end
 
-
-
-    reg [31:0] cpuregs [0:31];
-
-	//reg [63:0] count_cycle, count_instr;
-	reg [31:0] reg_op1, reg_op2;
-    reg [31:0] store_data;
-    wire [31:0] load_shifted = mem_data >> {alu_out[1:0], 3'b000};
-    reg [31:0] load_result;
-
-    wire data_misaligned =
-        ((instr_lh || instr_lhu || instr_sh) && alu_out[0]) ||
-        ((instr_lw || instr_sw) && (alu_out[1:0] != 2'b00));
-
-
-    wire [31:0] cpuregs_rs1 = decoded_rs1 ? cpuregs[decoded_rs1] : 0;
-    wire [31:0] cpuregs_rs2 = decoded_rs2 ? cpuregs[decoded_rs2] : 0;
-
-
+    // ALU and comparison
 	reg [31:0] alu_out;
-	reg alu_out_0;
+	reg alu_compare_result;
 
 	reg [31:0] alu_add_sub;
 	reg [31:0] alu_shl, alu_shr;
 	reg alu_eq, alu_ltu, alu_lts;
 
-    // alu module
+    // Arithmetic, shifts, and comparison primitives
     always @* begin
-        alu_add_sub = instr_sub ? reg_op1 - reg_op2 : reg_op1 + reg_op2;
-        alu_eq = reg_op1 == reg_op2;
-        alu_lts = $signed(reg_op1) < $signed(reg_op2);
-        alu_ltu = reg_op1 < reg_op2;
-        alu_shl = reg_op1 << reg_op2[4:0];
-        alu_shr = $signed({instr_sra || instr_srai ? reg_op1[31] : 1'b0, reg_op1}) >>> reg_op2[4:0];
+        alu_add_sub = instr_sub ? alu_op1 - alu_op2 : alu_op1 + alu_op2;
+        alu_eq = alu_op1 == alu_op2;
+        alu_lts = $signed(alu_op1) < $signed(alu_op2);
+        alu_ltu = alu_op1 < alu_op2;
+        alu_shl = alu_op1 << alu_op2[4:0];
+        alu_shr = $signed({instr_sra || instr_srai ? alu_op1[31] : 1'b0, alu_op1}) >>> alu_op2[4:0];
     end
 
-
+    // Branch and set-less-than conditions
 	always @* begin
-		alu_out_0 = 'bx;
+		alu_compare_result = 'bx;
         // for conditional branch instructions
 		case (1'b1)
 			instr_beq:
-				alu_out_0 = alu_eq;
-			instr_bne:
-				alu_out_0 = !alu_eq;
-			instr_bge:
-				alu_out_0 = !alu_lts;
-			instr_bgeu:
-				alu_out_0 = !alu_ltu;
-			is_slti_blt_slt:
-				alu_out_0 = alu_lts;
-			is_sltiu_bltu_sltu:
-				alu_out_0 = alu_ltu;
-		endcase
+				alu_compare_result = alu_eq;
 
-		alu_out = 'bx;
-		case (1'b1)
-			is_lui_auipc_jal_jalr_addi_add_sub ||
-            is_lb_lh_lw_lbu_lhu ||
-            is_sb_sh_sw:
-				alu_out = alu_add_sub;
-			is_compare:
-				alu_out = alu_out_0;
-			instr_xori || instr_xor:
-				alu_out = reg_op1 ^ reg_op2;
-			instr_ori || instr_or:
-				alu_out = reg_op1 | reg_op2;
-			instr_andi || instr_and:
-				alu_out = reg_op1 & reg_op2;
-			instr_sll || instr_slli:
-				alu_out = alu_shl;
-			instr_srl || instr_srli || instr_sra || instr_srai:
-				alu_out = alu_shr;
+			instr_bne:
+				alu_compare_result = !alu_eq;
+
+			instr_bge:
+				alu_compare_result = !alu_lts;
+
+			instr_bgeu:
+				alu_compare_result = !alu_ltu;
+
+			instr_slti || instr_blt || instr_slt:
+				alu_compare_result = alu_lts;
+
+			instr_sltiu || instr_bltu || instr_sltu:
+				alu_compare_result = alu_ltu;
 		endcase
     end
 
+    // Final ALU result selection
+always @* begin
+    alu_out = 32'bx;
+
+    case (1'b1)
+        // Arithmetic and effective address calculation
+        instr_lui || instr_auipc ||
+        instr_jal || instr_jalr ||
+        instr_addi || instr_add || instr_sub ||
+        instr_lb || instr_lh || instr_lw ||
+        instr_lbu || instr_lhu ||
+        instr_sb || instr_sh || instr_sw:
+            alu_out = alu_add_sub;
+
+        // Comparison
+        instr_beq || instr_bne ||
+        instr_blt || instr_bge ||
+        instr_bltu || instr_bgeu ||
+        instr_slti || instr_sltiu ||
+        instr_slt || instr_sltu:
+            alu_out = alu_compare_result;
+
+        // Bitwise logic
+        instr_xori || instr_xor:
+            alu_out = alu_op1 ^ alu_op2;
+
+        instr_ori || instr_or:
+            alu_out = alu_op1 | alu_op2;
+
+        instr_andi || instr_and:
+            alu_out = alu_op1 & alu_op2;
+
+        // Shift
+        instr_slli || instr_sll:
+            alu_out = alu_shl;
+
+        instr_srli || instr_srai ||
+        instr_srl || instr_sra:
+            alu_out = alu_shr;
+    endcase
+end
+
+    // Load/store data formatting
+    wire [31:0] load_shifted = mem_data >> {alu_out[1:0], 3'b000};
+
+    // Result of load sign/zero extension
+    reg [31:0] mem_load_result;
+
+    // Unsupported unaligned accesses are handled by the CPU FSM
+    wire data_misaligned =
+        ((instr_lh || instr_lhu || instr_sh) && alu_out[0]) ||
+        ((instr_lw || instr_sw) && (alu_out[1:0] != 2'b00));
 
     always @* begin
         case (1'b1)
             instr_lb:
-                load_result = {{24{load_shifted[7]}}, load_shifted[7:0]};
+                mem_load_result = {{24{load_shifted[7]}}, load_shifted[7:0]};
 
             instr_lbu:
-                load_result = {24'b0, load_shifted[7:0]};
+                mem_load_result = {24'b0, load_shifted[7:0]};
 
             instr_lh:
-                load_result = {{16{load_shifted[15]}}, load_shifted[15:0]};
+                mem_load_result = {{16{load_shifted[15]}}, load_shifted[15:0]};
 
             instr_lhu:
-                load_result = {16'b0, load_shifted[15:0]};
+                mem_load_result = {16'b0, load_shifted[15:0]};
 
             instr_lw:
-                load_result = mem_data;
+                mem_load_result = mem_data;
 
             default:
-                load_result = 32'bx;
+                mem_load_result = 32'bx;
         endcase
     end
 
-
+    // CPU execution and register file
 	localparam cpu_state_fetch  = 3'd0;
 	localparam cpu_state_ld_rs = 3'd1;
 	localparam cpu_state_exec   = 3'd2;
@@ -517,10 +437,28 @@ module cpu_core (
 	localparam cpu_state_ldmem  = 3'd4;
 	localparam cpu_state_trap   = 3'd5;
 
+    // State and program counters (written by the CPU FSM)
+    reg [2:0] cpu_state;
+    reg [31:0] current_pc;
+    reg [31:0] next_pc;
+
+    // Requests issued by the CPU FSM and consumed by the memory interface
+    reg mem_req_instr;
+    reg mem_req_load;
+    reg mem_req_store;
+
+    // ALU operands and store data (registered in the CPU FSM)
+	reg [31:0] alu_op1, alu_op2;
+    reg [31:0] mem_store_data;
+
+    // Register file
+    reg [31:0] cpuregs [0:31];
+    wire [31:0] cpuregs_rs1 = decoded_rs1 ? cpuregs[decoded_rs1] : 0;
+    wire [31:0] cpuregs_rs2 = decoded_rs2 ? cpuregs[decoded_rs2] : 0;
+
+    // Register file reset loop index
     integer i;
 
-    // cpu module
-    // fetch + exec
     always @(posedge clk) begin
         if (!rst_n) begin
             current_pc <= 32'b0;
@@ -528,83 +466,110 @@ module cpu_core (
 
             cpu_state <= cpu_state_fetch;
 
-            mem_do_rinst <= 0;
-            mem_do_rdata <= 0;
-            mem_do_wdata <= 0;
-            store_data <= 32'b0;
-            
+            mem_req_instr <= 0;
+            mem_req_load <= 0;
+            mem_req_store <= 0;
+            mem_store_data <= 32'b0;
+
             for (i = 0; i < 32; i = i + 1) begin
                 cpuregs[i] <= 32'd0;
             end
         end else begin
             case (cpu_state)
                 cpu_state_fetch: begin
-                    if (!mem_do_rinst) begin
-                        mem_do_rinst <= 1;
+                    if (!mem_req_instr) begin
+                        mem_req_instr <= 1;
                         current_pc <= next_pc;
                     end
 
                     // this means having fetched instruction
-                    if ((mem_xfer & mem_do_rinst)) begin
-                        mem_do_rinst <= 0;
+                    if ((mem_xfer & mem_req_instr)) begin
+                        mem_req_instr <= 0;
                         cpu_state <= cpu_state_ld_rs;
                     end
                 end
 
                 cpu_state_ld_rs: begin
-                    // make sure cpu_state_ld_rs happen after fully decoding
                     if (decoder_done) begin
-                        next_pc <= next_pc + 4;
-                        cpu_state <= cpu_state_fetch;
+
+                        next_pc <= current_pc + 32'd4;
 
                         case (1'b1)
-                            is_lui_auipc_jal: begin
-                                reg_op1 <= instr_lui ? 32'd0 : current_pc;
-                                reg_op2 <= decoded_imm;
+
+                            // LUI, AUIPC, JAL
+                            // Operand 1: zero or PC
+                            // Operand 2: immediate
+                            instr_lui || instr_auipc || instr_jal: begin
+                                alu_op1 <= instr_lui ? 32'd0 : current_pc;
+                                alu_op2 <= decoded_imm;
                                 cpu_state <= cpu_state_exec;
                             end
 
-                            is_jalr_addi_slti_sltiu_xori_ori_andi, is_slli_srli_srai: begin
-                                $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
-                                reg_op1 <= cpuregs_rs1;
-                                // dbg_rs1val <= cpuregs_rs1;
-                                // dbg_rs1val_valid <= 1;
-                                reg_op2 <= is_slli_srli_srai ? decoded_rs2 : decoded_imm;
+                            // JALR and ALU immediate instructions
+                            // Operand 1: rs1
+                            // Operand 2: immediate
+                            instr_jalr ||
+                            instr_addi || instr_slti || instr_sltiu ||
+                            instr_xori || instr_ori || instr_andi: begin
+                                alu_op1 <= cpuregs_rs1;
+                                alu_op2 <= decoded_imm;
                                 cpu_state <= cpu_state_exec;
                             end
 
-                            is_lb_lh_lw_lbu_lhu: begin
-                                $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
-                                reg_op1 <= cpuregs_rs1;
-                                reg_op2 <= decoded_imm;
-                                // dbg_rs1val <= cpuregs_rs1;
-                                // dbg_rs1val_valid <= 1;
+                            // Shift immediate instructions
+                            // Operand 1: rs1
+                            // Operand 2: 5-bit shift amount
+                            instr_slli || instr_srli || instr_srai: begin
+                                alu_op1 <= cpuregs_rs1;
+                                alu_op2 <= {27'b0, decoded_rs2};
+                                cpu_state <= cpu_state_exec;
+                            end
+
+                            // Load instructions
+                            // Effective address = rs1 + immediate
+                            instr_lb || instr_lh || instr_lw ||
+                            instr_lbu || instr_lhu: begin
+                                alu_op1 <= cpuregs_rs1;
+                                alu_op2 <= decoded_imm;
                                 cpu_state <= cpu_state_ldmem;
                             end
 
-                            is_sb_sh_sw: begin
-                                reg_op1 <= cpuregs_rs1;
-                                reg_op2 <= decoded_imm;
-                                store_data <= cpuregs_rs2;
+                            // Store instructions
+                            // Effective address = rs1 + immediate
+                            // Store data = rs2
+                            instr_sb || instr_sh || instr_sw: begin
+                                alu_op1 <= cpuregs_rs1;
+                                alu_op2 <= decoded_imm;
+                                mem_store_data <= cpuregs_rs2;
                                 cpu_state <= cpu_state_stmem;
                             end
 
-                            // all the instructions using rs1 and rs2 as parameters
-                            // R-type ALU: ADD, SUB, SLL, SLTU, XOR, SRL, SRA, OR, AND
-                            // Branch: BEQ, BNE, BLT, BGE, BLTU, BGEU
-                            // those don't need any ALU Operand: FENCE
-                            // todo this can be sorted out
-                            default: begin
-                                $display("LD_RS1: %2d 0x%08x", decoded_rs1, cpuregs_rs1);
-                                reg_op1 <= cpuregs_rs1;
-                                $display("LD_RS2: %2d 0x%08x", decoded_rs2, cpuregs_rs2);
-                                reg_op2 <= cpuregs_rs2;
-
+                            // R-type ALU instructions and conditional branches
+                            // Operand 1: rs1
+                            // Operand 2: rs2
+                            instr_add || instr_sub ||
+                            instr_sll || instr_slt || instr_sltu ||
+                            instr_xor || instr_srl || instr_sra ||
+                            instr_or || instr_and ||
+                            instr_beq || instr_bne ||
+                            instr_blt || instr_bge ||
+                            instr_bltu || instr_bgeu: begin
+                                alu_op1 <= cpuregs_rs1;
+                                alu_op2 <= cpuregs_rs2;
                                 cpu_state <= cpu_state_exec;
                             end
 
-                        endcase
+                            // FENCE: NOP in the current memory architecture
+                            instr_fence: begin
+                                cpu_state <= cpu_state_fetch;
+                            end
 
+                            // Illegal or unsupported instruction
+                            default: begin
+                                cpu_state <= cpu_state_trap;
+                            end
+
+                        endcase
                     end
                 end
 
@@ -657,7 +622,7 @@ module cpu_core (
                         instr_blt || instr_bge ||
                         instr_bltu || instr_bgeu: begin
 
-                            if (alu_out_0) begin
+                            if (alu_compare_result) begin
                                 if ((current_pc + decoded_imm) & 32'h2)
                                     cpu_state <= cpu_state_trap;
                                 else begin
@@ -667,11 +632,6 @@ module cpu_core (
                             end else begin
                                 cpu_state <= cpu_state_fetch;
                             end
-                        end
-
-                        // FENCE
-                        instr_fence: begin
-                            cpu_state <= cpu_state_fetch;
                         end
 
                         // Illegal / Unsupported Instruction
@@ -686,21 +646,21 @@ module cpu_core (
                         cpu_state <= cpu_state_trap;
                     end else begin
                         // Request a data read
-                        if (!mem_do_rdata) begin
-                            mem_do_rdata <= 1'b1;
+                        if (!mem_req_load) begin
+                            mem_req_load <= 1'b1;
                         end
 
                         // Memory read completed
-                        if (mem_xfer && mem_do_rdata) begin
-                            mem_do_rdata <= 1'b0;
+                        if (mem_xfer && mem_req_load) begin
+                            mem_req_load <= 1'b0;
 
                             if (decoded_rd != 5'd0) begin
-                                cpuregs[decoded_rd] <= load_result;
+                                cpuregs[decoded_rd] <= mem_load_result;
                             end
 
                             cpu_state <= cpu_state_fetch;
                         end
-                    end                   
+                    end
                 end
 
                 cpu_state_stmem: begin
@@ -708,29 +668,26 @@ module cpu_core (
                         cpu_state <= cpu_state_trap;
                     end else begin
                         // Request a data write
-                        if (!mem_do_wdata) begin
-                            mem_do_wdata <= 1'b1;
+                        if (!mem_req_store) begin
+                            mem_req_store <= 1'b1;
                         end
 
                         // Memory write completed
-                        if (mem_xfer && mem_do_wdata) begin
-                            mem_do_wdata <= 1'b0;
+                        if (mem_xfer && mem_req_store) begin
+                            mem_req_store <= 1'b0;
                             cpu_state <= cpu_state_fetch;
                         end
-                    end                    
+                    end
                 end
 
                 cpu_state_trap: begin
-                    mem_do_rinst <= 0;
-                    mem_do_rdata <= 0;
-                    mem_do_wdata <= 0;
+                    mem_req_instr <= 0;
+                    mem_req_load <= 0;
+                    mem_req_store <= 0;
                     cpu_state <= cpu_state_trap;
                 end
             endcase
         end
     end
 
-
-
 endmodule
-
