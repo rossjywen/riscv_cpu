@@ -20,7 +20,7 @@ module tb_bram;
         .valid (valid),
         .addr  (addr),
         .wstrb (4'b0),
-        .wdata (32'b0)
+        .wdata (32'b0),
         .ready (ready),
         .data  (data)
     );
