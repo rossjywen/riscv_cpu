@@ -84,7 +84,7 @@ module tb_c_program;
                 $fatal(1, "TIMEOUT: no C firmware signature after %0d cycles; PC=%08h",
                        tb_cycles, dut.current_pc);
 
-            if (dut.cpu_state == 3'd5)
+            if (dut.cpu_state == 4'd6)
                 $fatal(1, "CPU TRAP: PC=%08h instruction=%08h",
                        dut.current_pc, dut.instr_word);
 

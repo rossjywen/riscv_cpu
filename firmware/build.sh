@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build RV32I bare-metal firmware and generate program.mem for $readmemh.
+# Build RV32IM bare-metal firmware and generate program.mem for $readmemh.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="$ROOT/build"
 mkdir -p "$OUT"
@@ -38,7 +38,7 @@ for tool in "$OBJCOPY" "$OBJDUMP" python3; do
 done
 
 CFLAGS=(
-    -march=rv32i -mabi=ilp32
+    -march=rv32im -mabi=ilp32
     -O0 -g
     -ffreestanding -fno-builtin -fno-stack-protector
     -fno-unwind-tables -fno-asynchronous-unwind-tables
