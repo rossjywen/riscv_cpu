@@ -96,13 +96,17 @@ module cpu_core (
 	reg predecode_alu_imm;
 	reg predecode_alu_reg;
 
-    // Decoded instruction flags
+    // RV32I 38/40 except EBREAK and ECALL
     reg instr_lui, instr_auipc, instr_jal, instr_jalr;
 	reg instr_beq, instr_bne, instr_blt, instr_bge, instr_bltu, instr_bgeu;
 	reg instr_lb, instr_lh, instr_lw, instr_lbu, instr_lhu, instr_sb, instr_sh, instr_sw;
 	reg instr_addi, instr_slti, instr_sltiu, instr_xori, instr_ori, instr_andi, instr_slli, instr_srli, instr_srai;
 	reg instr_add, instr_sub, instr_sll, instr_slt, instr_sltu, instr_xor, instr_srl, instr_sra, instr_or, instr_and;
     reg instr_fence;
+
+    // RV32M 8/8
+    reg instr_mul, instr_mulh, instr_mulhsu, instr_mulhu;
+    reg instr_div, instr_divu, instr_rem, instr_remu;
 
     // Decoded operand indices and immediate values
 	reg [4:0] decoded_rd, decoded_rs1;
@@ -137,8 +141,7 @@ module cpu_core (
             instr_srli  <= 0;
             instr_srai  <= 0;
 
-            predecode_branch <= 0;
-
+            // Branch
             instr_beq   <= 0;
             instr_bne   <= 0;
             instr_blt   <= 0;
@@ -146,6 +149,7 @@ module cpu_core (
             instr_bltu  <= 0;
             instr_bgeu  <= 0;
 
+            // ALUI
             instr_addi  <= 0;
             instr_slti  <= 0;
             instr_sltiu <= 0;
@@ -153,6 +157,7 @@ module cpu_core (
             instr_ori   <= 0;
             instr_andi  <= 0;
 
+            // ALU
             instr_add   <= 0;
             instr_sub   <= 0;
             instr_sll   <= 0;
@@ -166,6 +171,20 @@ module cpu_core (
 
             instr_fence <= 0;
 
+            // Multiply
+            instr_mul    <= 0;
+            instr_mulh   <= 0;
+            instr_mulhsu <= 0;
+            instr_mulhu  <= 0;
+
+            // Divide
+            instr_div    <= 0;
+            instr_divu   <= 0;
+            instr_rem    <= 0;
+            instr_remu   <= 0;
+            
+
+            predecode_branch <= 0;
             predecode_load <= 0;
             predecode_store <= 0;
             predecode_alu_imm <= 0;
@@ -243,6 +262,18 @@ module cpu_core (
 
                 instr_fence <= (instr_word[6:0] == 7'b0001111 && !instr_word[14:12]);
 
+                // RV32M - Multiply
+                instr_mul    <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b000;
+                instr_mulh   <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b001;
+                instr_mulhsu <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b010;
+                instr_mulhu  <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b011;
+
+                // RV32M - Divide / Remainder
+                instr_div    <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b100;
+                instr_divu   <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b101;
+                instr_rem    <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b110;
+                instr_remu   <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b111;
+
                 case (1'b1)
                     instr_jal:
                         decoded_imm <= decoded_imm_j;
@@ -266,49 +297,59 @@ module cpu_core (
     reg [63:0] new_ascii_instr;
 
     always @* begin
-		new_ascii_instr = "";
+        new_ascii_instr = "";
 
-		if (instr_lui)      new_ascii_instr = "lui";
-		if (instr_auipc)    new_ascii_instr = "auipc";
-		if (instr_jal)      new_ascii_instr = "jal";
-		if (instr_jalr)     new_ascii_instr = "jalr";
+        if (instr_lui)      new_ascii_instr = "lui";
+        if (instr_auipc)    new_ascii_instr = "auipc";
+        if (instr_jal)      new_ascii_instr = "jal";
+        if (instr_jalr)     new_ascii_instr = "jalr";
 
-		if (instr_beq)      new_ascii_instr = "beq";
-		if (instr_bne)      new_ascii_instr = "bne";
-		if (instr_blt)      new_ascii_instr = "blt";
-		if (instr_bge)      new_ascii_instr = "bge";
-		if (instr_bltu)     new_ascii_instr = "bltu";
-		if (instr_bgeu)     new_ascii_instr = "bgeu";
+        if (instr_beq)      new_ascii_instr = "beq";
+        if (instr_bne)      new_ascii_instr = "bne";
+        if (instr_blt)      new_ascii_instr = "blt";
+        if (instr_bge)      new_ascii_instr = "bge";
+        if (instr_bltu)     new_ascii_instr = "bltu";
+        if (instr_bgeu)     new_ascii_instr = "bgeu";
 
-		if (instr_lb)       new_ascii_instr = "lb";
-		if (instr_lh)       new_ascii_instr = "lh";
-		if (instr_lw)       new_ascii_instr = "lw";
-		if (instr_lbu)      new_ascii_instr = "lbu";
-		if (instr_lhu)      new_ascii_instr = "lhu";
-		if (instr_sb)       new_ascii_instr = "sb";
-		if (instr_sh)       new_ascii_instr = "sh";
-		if (instr_sw)       new_ascii_instr = "sw";
+        if (instr_lb)       new_ascii_instr = "lb";
+        if (instr_lh)       new_ascii_instr = "lh";
+        if (instr_lw)       new_ascii_instr = "lw";
+        if (instr_lbu)      new_ascii_instr = "lbu";
+        if (instr_lhu)      new_ascii_instr = "lhu";
+        if (instr_sb)       new_ascii_instr = "sb";
+        if (instr_sh)       new_ascii_instr = "sh";
+        if (instr_sw)       new_ascii_instr = "sw";
 
-		if (instr_addi)     new_ascii_instr = "addi";
-		if (instr_slti)     new_ascii_instr = "slti";
-		if (instr_sltiu)    new_ascii_instr = "sltiu";
-		if (instr_xori)     new_ascii_instr = "xori";
-		if (instr_ori)      new_ascii_instr = "ori";
-		if (instr_andi)     new_ascii_instr = "andi";
-		if (instr_slli)     new_ascii_instr = "slli";
-		if (instr_srli)     new_ascii_instr = "srli";
-		if (instr_srai)     new_ascii_instr = "srai";
+        if (instr_addi)     new_ascii_instr = "addi";
+        if (instr_slti)     new_ascii_instr = "slti";
+        if (instr_sltiu)    new_ascii_instr = "sltiu";
+        if (instr_xori)     new_ascii_instr = "xori";
+        if (instr_ori)      new_ascii_instr = "ori";
+        if (instr_andi)     new_ascii_instr = "andi";
+        if (instr_slli)     new_ascii_instr = "slli";
+        if (instr_srli)     new_ascii_instr = "srli";
+        if (instr_srai)     new_ascii_instr = "srai";
 
-		if (instr_add)      new_ascii_instr = "add";
-		if (instr_sub)      new_ascii_instr = "sub";
-		if (instr_sll)      new_ascii_instr = "sll";
-		if (instr_slt)      new_ascii_instr = "slt";
-		if (instr_sltu)     new_ascii_instr = "sltu";
-		if (instr_xor)      new_ascii_instr = "xor";
-		if (instr_srl)      new_ascii_instr = "srl";
-		if (instr_sra)      new_ascii_instr = "sra";
-		if (instr_or)       new_ascii_instr = "or";
-		if (instr_and)      new_ascii_instr = "and";
+        if (instr_add)      new_ascii_instr = "add";
+        if (instr_sub)      new_ascii_instr = "sub";
+        if (instr_sll)      new_ascii_instr = "sll";
+        if (instr_slt)      new_ascii_instr = "slt";
+        if (instr_sltu)     new_ascii_instr = "sltu";
+        if (instr_xor)      new_ascii_instr = "xor";
+        if (instr_srl)      new_ascii_instr = "srl";
+        if (instr_sra)      new_ascii_instr = "sra";
+        if (instr_or)       new_ascii_instr = "or";
+        if (instr_and)      new_ascii_instr = "and";
+
+        if (instr_mul)    new_ascii_instr = "mul";
+        if (instr_mulh)   new_ascii_instr = "mulh";
+        if (instr_mulhsu) new_ascii_instr = "mulhsu";
+        if (instr_mulhu)  new_ascii_instr = "mulhu";
+
+        if (instr_div)    new_ascii_instr = "div";
+        if (instr_divu)   new_ascii_instr = "divu";
+        if (instr_rem)    new_ascii_instr = "rem";
+        if (instr_remu)   new_ascii_instr = "remu";
 	end
 
     // ALU and comparison
@@ -355,46 +396,49 @@ module cpu_core (
     end
 
     // Final ALU result selection
-always @* begin
-    alu_out = 32'bx;
+    always @* begin
+        alu_out = 32'bx;
 
-    case (1'b1)
-        // Arithmetic and effective address calculation
-        instr_lui || instr_auipc ||
-        instr_jal || instr_jalr ||
-        instr_addi || instr_add || instr_sub ||
-        instr_lb || instr_lh || instr_lw ||
-        instr_lbu || instr_lhu ||
-        instr_sb || instr_sh || instr_sw:
-            alu_out = alu_add_sub;
+        case (1'b1)
+            // Arithmetic and effective address calculation
+            instr_lui || instr_auipc ||
+            instr_jal || instr_jalr ||
+            instr_addi || instr_add || instr_sub ||
+            instr_lb || instr_lh || instr_lw ||
+            instr_lbu || instr_lhu ||
+            instr_sb || instr_sh || instr_sw:
+                alu_out = alu_add_sub;
 
-        // Comparison
-        instr_beq || instr_bne ||
-        instr_blt || instr_bge ||
-        instr_bltu || instr_bgeu ||
-        instr_slti || instr_sltiu ||
-        instr_slt || instr_sltu:
-            alu_out = alu_compare_result;
+            // Comparison
+            instr_beq || instr_bne ||
+            instr_blt || instr_bge ||
+            instr_bltu || instr_bgeu ||
+            instr_slti || instr_sltiu ||
+            instr_slt || instr_sltu:
+                alu_out = alu_compare_result;
 
-        // Bitwise logic
-        instr_xori || instr_xor:
-            alu_out = alu_op1 ^ alu_op2;
+            // Bitwise logic
+            instr_xori || instr_xor:
+                alu_out = alu_op1 ^ alu_op2;
 
-        instr_ori || instr_or:
-            alu_out = alu_op1 | alu_op2;
+            instr_ori || instr_or:
+                alu_out = alu_op1 | alu_op2;
 
-        instr_andi || instr_and:
-            alu_out = alu_op1 & alu_op2;
+            instr_andi || instr_and:
+                alu_out = alu_op1 & alu_op2;
 
-        // Shift
-        instr_slli || instr_sll:
-            alu_out = alu_shl;
+            // Shift
+            instr_slli || instr_sll:
+                alu_out = alu_shl;
 
-        instr_srli || instr_srai ||
-        instr_srl || instr_sra:
-            alu_out = alu_shr;
-    endcase
-end
+            instr_srli || instr_srai ||
+            instr_srl || instr_sra:
+                alu_out = alu_shr;
+
+
+
+        endcase
+    end
 
     // Load/store data formatting
     wire [31:0] load_shifted = mem_data >> {alu_out[1:0], 3'b000};
