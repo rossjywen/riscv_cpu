@@ -1,42 +1,69 @@
 #include <stdint.h>
 
-// -----------------------------------------------------------------------------
-// Test variables: inspect these symbols and RAM contents in the Vivado waveform.
-// -----------------------------------------------------------------------------
-volatile uint32_t numbers[4] = {10, 20, 30, 40};  // .data: must be preloaded
-volatile uint32_t result;                        // .bss: must start at zero
-volatile uint32_t result_xor;                    // .bss
-volatile uint32_t status;                        // .bss
 
-// Prevent inlining, so the program also exercises a function call and stack.
-__attribute__((noinline))
-static uint32_t sum_array(const volatile uint32_t *array, uint32_t length)
+// AXI UART Lite Register Map
+
+#define UART_BASE       0x10000000u
+
+#define UART_RX         (*(volatile uint32_t *)(UART_BASE + 0x00u))
+#define UART_TX         (*(volatile uint32_t *)(UART_BASE + 0x04u))
+#define UART_STATUS     (*(volatile uint32_t *)(UART_BASE + 0x08u))
+#define UART_CONTROL    (*(volatile uint32_t *)(UART_BASE + 0x0Cu))
+
+#define UART_RX_VALID   (1u << 0)
+#define UART_TX_FULL    (1u << 3)
+#define UART_RESET_FIFO 0x03u
+
+
+// UART Driver
+
+static void uart_init(void)
 {
-    uint32_t sum = 0;
-
-    for (uint32_t i = 0; i < length; ++i) {
-        sum += array[i];
-    }
-
-    return sum;
+	// Clear TX/RX FIFOs. Interrupts remain disabled.
+	UART_CONTROL = UART_RESET_FIFO;
 }
+
+static char uart_getc(void)
+{
+	while (!(UART_STATUS & UART_RX_VALID)) {
+	}
+
+	return (char)(uint8_t)UART_RX;
+}
+
+static void uart_putc(char c)
+{
+	// Wait until TX FIFO has available space.
+	while (UART_STATUS & UART_TX_FULL) {
+	}
+
+	// Send one character.
+	UART_TX = (uint32_t)(uint8_t)c;
+}
+
+static void uart_puts(const char *str)
+{
+	while (*str) {
+		uart_putc(*str++);
+	}
+}
+
+// ------------------------------------------------------------------
+// Main
+// ------------------------------------------------------------------
 
 int main(void)
 {
-    // Check that crt.s correctly cleared the .bss section.
-    uint32_t bss_ok = (result == 0u && result_xor == 0u && status == 0u);
+	uint8_t i;
 
-    result = sum_array(numbers, 4u);
-    result_xor = result ^ 0x5a5a5a5au;
+	uart_init();
 
-    // Observe the status word to determine whether the firmware passed.
-    if (bss_ok && result == 100u && result_xor == 0x5a5a5a3eu) {
-        status = 0x600d600du;    // PASS
-    } else {
-        status = 0xbad0bad0u;    // FAIL
-    }
+	for (i = 0; i < 10; i++) {
+		uart_puts("From Ross RISC-V\r\n");     
+	}
 
-    // No ECALL/EBREAK, OS, UART, or exit() is required.
-    while (1) {
-    }
+	while (1) {
+	}
+
+	return 0;
 }

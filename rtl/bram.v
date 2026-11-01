@@ -9,7 +9,8 @@ module bram(
     output reg [31:0]   data
 );
     localparam integer RAM_WORDS = 65536;  // 256 KiB
-    (* ram_style = "block" *)
+
+    (* ram_style = "block", ram_decomp = "power" *)
     reg [31:0] mem [0:RAM_WORDS-1];
     
     initial begin

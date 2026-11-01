@@ -1,0 +1,6 @@
+/firmware/build/
+/firmware/program.mem
+xvlog.*
+xelab.*
+xsim.*
+

@@ -1,6 +1,4 @@
-// -----------------------------------------------------------------------------
 // RV32M - Integer multiply/divide execution unit
-// -----------------------------------------------------------------------------
 // Supported: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
 //
 // Interface:
@@ -9,8 +7,8 @@
 //   result : 32-bit value to write into rd
 //
 // One operation at a time. The CPU must wait for done before issuing another.
-// Multiplication uses the synthesis tool's multiplier; division uses 32 steps.
-// -----------------------------------------------------------------------------
+// Multiplication uses two registered stages; division uses 32 steps.
+
 module rv32m_unit (
 	input  wire        clk,
 	input  wire        rst_n,
@@ -31,21 +29,30 @@ module rv32m_unit (
 	output reg  [31:0] result
 );
 
-	// -------------------------------------------------------------------------
-	// Multiplier
-	// -------------------------------------------------------------------------
-	// Extra sign bit allows signed and unsigned operands to share one multiplier.
-	wire signed [32:0] mul_operand1 = {
-		(instr_mulh || instr_mulhsu) && operand1[31], operand1
-	};
-	wire signed [32:0] mul_operand2 = {
-		instr_mulh && operand2[31], operand2
-	};
-	wire signed [65:0] mul_product = mul_operand1 * mul_operand2;
+	// Multiplier: two-cycle implementation
+	// First stage: unsigned 32x32 => 64-bit product, independently of opcode.
+	// Second stage: adjust upper 32 bits for signed operands.
+	//
+	// For A and B interpreted as 32-bit unsigned values:
+	// signed_high = unsigned_high
+	//               - (A is signed-negative ? B : 0)
+	//               - (B is signed-negative ? A : 0)   (mod 2^32).
+	//
+	// MUL    : use low 32 bits (same for signed and unsigned).
+	// MULH   : both operands signed.
+	// MULHSU : only operand1 signed.
+	// MULHU  : neither operand signed.
+	wire [63:0] mul_unsigned_product = operand1 * operand2;
+	wire [31:0] mul_sign_correction =
+		(((instr_mulh || instr_mulhsu) && operand1[31]) ? operand2 : 32'b0) +
+		((instr_mulh && operand2[31]) ? operand1 : 32'b0);
 
-	// -------------------------------------------------------------------------
+	reg         mul_pending;
+	reg         mul_use_low;
+	reg [63:0]  mul_product_reg;
+	reg [31:0]  mul_correction_reg;
+
 	// Divider: unsigned restoring division with signed input/output correction
-	// -------------------------------------------------------------------------
 	reg         div_busy;
 	reg [5:0]   div_step;
 	reg [31:0]  div_divisor;
@@ -69,13 +76,15 @@ module rv32m_unit (
 		: div_trial_remainder;
 	wire [31:0] div_next_quotient = {div_quotient[30:0], div_subtract};
 
-	// -------------------------------------------------------------------------
 	// Operation controller and result register
-	// -------------------------------------------------------------------------
 	always @(posedge clk) begin
 		if (!rst_n) begin
 			done <= 1'b0;
 			result <= 32'b0;
+			mul_pending <= 1'b0;
+			mul_use_low <= 1'b0;
+			mul_product_reg <= 64'b0;
+			mul_correction_reg <= 32'b0;
 			div_busy <= 1'b0;
 			div_step <= 6'd0;
 			div_divisor <= 32'b0;
@@ -87,17 +96,26 @@ module rv32m_unit (
 		end else begin
 			done <= 1'b0;
 
-			if (start && !div_busy) begin
+			if (mul_pending) begin
+				// Stage 2: select low product or signed-corrected high product.
+				result <= mul_use_low ? mul_product_reg[31:0]
+					: (mul_product_reg[63:32] - mul_correction_reg);
+				mul_pending <= 1'b0;
+				done <= 1'b1;
+			end else if (start && !div_busy) begin
 				if (instr_mul || instr_mulh || instr_mulhsu || instr_mulhu) begin
-					result <= instr_mul ? mul_product[31:0] : mul_product[63:32];
-					done <= 1'b1;
+					// Stage 1: register the full unsigned product and correction.
+					mul_product_reg <= mul_unsigned_product;
+					mul_correction_reg <= mul_sign_correction;
+					mul_use_low <= instr_mul;
+					mul_pending <= 1'b1;
 				end else if (instr_div || instr_divu || instr_rem || instr_remu) begin
 					if (operand2 == 32'b0) begin
 						// RISC-V: division by zero never raises a trap.
 						result <= (instr_rem || instr_remu) ? operand1 : 32'hffffffff;
 						done <= 1'b1;
 					end else if (div_signed && operand1 == 32'h80000000 &&
-					             operand2 == 32'hffffffff) begin
+								 operand2 == 32'hffffffff) begin
 						// RISC-V: signed overflow (INT_MIN / -1).
 						result <= instr_rem ? 32'b0 : 32'h80000000;
 						done <= 1'b1;
