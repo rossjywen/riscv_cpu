@@ -95,23 +95,36 @@ module cpu_core (
 	reg predecode_branch;
 	reg predecode_alu_imm;
 	reg predecode_alu_reg;
+	reg predecode_system;
 
-	// RV32I 38/40 except EBREAK and ECALL
+	// RV32I 40/40
 	reg instr_lui, instr_auipc, instr_jal, instr_jalr;
 	reg instr_beq, instr_bne, instr_blt, instr_bge, instr_bltu, instr_bgeu;
 	reg instr_lb, instr_lh, instr_lw, instr_lbu, instr_lhu, instr_sb, instr_sh, instr_sw;
 	reg instr_addi, instr_slti, instr_sltiu, instr_xori, instr_ori, instr_andi, instr_slli, instr_srli, instr_srai;
 	reg instr_add, instr_sub, instr_sll, instr_slt, instr_sltu, instr_xor, instr_srl, instr_sra, instr_or, instr_and;
+	reg instr_ecall, instr_ebreak;
 	reg instr_fence;
+
 
 	// RV32M 8/8
 	reg instr_mul, instr_mulh, instr_mulhsu, instr_mulhu;
 	reg instr_div, instr_divu, instr_rem, instr_remu;
 
+	// Zicsr 6/6
+	reg instr_csrrw,  instr_csrrs,  instr_csrrc;
+	reg instr_csrrwi, instr_csrrsi, instr_csrrci;
+
+	// M mode
+	reg instr_mret;
+
+
 	// Decoded operand indices and immediate values
 	reg [4:0] decoded_rd, decoded_rs1;
 	reg [4:0] decoded_rs2;
 	reg [31:0] decoded_imm, decoded_imm_j;
+	reg [11:0] decoded_csr_addr;
+
 
 	always @(posedge clk) begin
 		if (!rst_n) begin
@@ -182,14 +195,32 @@ module cpu_core (
 			instr_divu   <= 0;
 			instr_rem    <= 0;
 			instr_remu   <= 0;
-			
+
+			// system
+			instr_csrrw <= 0;
+			instr_csrrs <= 0;
+			instr_csrrc <= 0;
+			instr_csrrwi <= 0;
+			instr_csrrsi <= 0;
+			instr_csrrci <= 0;
+
+			instr_ecall <= 0;
+			instr_ebreak <= 0;
+			instr_mret <= 0;
 
 			predecode_branch <= 0;
 			predecode_load <= 0;
 			predecode_store <= 0;
 			predecode_alu_imm <= 0;
 			predecode_alu_reg <= 0;
+			predecode_system <= 0;
 
+			decoded_rd <= 5'b0;
+			decoded_rs1 <= 5'b0;
+			decoded_rs2 <= 5'b0;
+			decoded_imm <= 32'b0;
+			decoded_imm_j <= 32'b0;
+			decoded_csr_addr <= 12'b0;
 		end else begin
 			decoder_done <= 0;
 
@@ -207,13 +238,15 @@ module cpu_core (
 				predecode_store         <= mem_data[6:0] == 7'b0100011;
 				predecode_alu_imm       <= mem_data[6:0] == 7'b0010011;
 				predecode_alu_reg       <= mem_data[6:0] == 7'b0110011;
+				predecode_system		<= mem_data[6:0] == 7'b1110011;
 
 				// this is for J-type
 				{ decoded_imm_j[31:20], decoded_imm_j[10:1], decoded_imm_j[11], decoded_imm_j[19:12], decoded_imm_j[0] } <= $signed({mem_data[31:12], 1'b0});
 
-				decoded_rd <= mem_data[11:7];
-				decoded_rs1 <= mem_data[19:15];
-				decoded_rs2 <= mem_data[24:20];
+				decoded_rd			<= mem_data[11:7];
+				decoded_rs1			<= mem_data[19:15];
+				decoded_rs2			<= mem_data[24:20];
+				decoded_csr_addr	<= mem_data[31:20];
 			end
 
 			// this is 2-nd decode stage
@@ -273,6 +306,20 @@ module cpu_core (
 				instr_divu   <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b101;
 				instr_rem    <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b110;
 				instr_remu   <= predecode_alu_reg && instr_word[31:25] == 7'b0000001 && instr_word[14:12] == 3'b111;
+
+				// Zicsr instructions
+				instr_csrrw  <= predecode_system && instr_word[14:12] == 3'b001;
+				instr_csrrs  <= predecode_system && instr_word[14:12] == 3'b010;
+				instr_csrrc  <= predecode_system && instr_word[14:12] == 3'b011;
+
+				instr_csrrwi <= predecode_system && instr_word[14:12] == 3'b101;
+				instr_csrrsi <= predecode_system && instr_word[14:12] == 3'b110;
+				instr_csrrci <= predecode_system && instr_word[14:12] == 3'b111;
+
+				// Privileged / Environment
+				instr_ecall  <= predecode_system && instr_word == 32'h00000073;
+				instr_ebreak <= predecode_system && instr_word == 32'h00100073;
+				instr_mret   <= predecode_system && instr_word == 32'h30200073;
 
 				case (1'b1)
 					instr_jal:
@@ -341,15 +388,25 @@ module cpu_core (
 		if (instr_or)       new_ascii_instr = "or";
 		if (instr_and)      new_ascii_instr = "and";
 
-		if (instr_mul)    new_ascii_instr = "mul";
-		if (instr_mulh)   new_ascii_instr = "mulh";
-		if (instr_mulhsu) new_ascii_instr = "mulhsu";
-		if (instr_mulhu)  new_ascii_instr = "mulhu";
+		if (instr_mul)		new_ascii_instr = "mul";
+		if (instr_mulh)		new_ascii_instr = "mulh";
+		if (instr_mulhsu)	new_ascii_instr = "mulhsu";
+		if (instr_mulhu)	new_ascii_instr = "mulhu";
 
-		if (instr_div)    new_ascii_instr = "div";
-		if (instr_divu)   new_ascii_instr = "divu";
-		if (instr_rem)    new_ascii_instr = "rem";
-		if (instr_remu)   new_ascii_instr = "remu";
+		if (instr_div)		new_ascii_instr = "div";
+		if (instr_divu)		new_ascii_instr = "divu";
+		if (instr_rem)		new_ascii_instr = "rem";
+		if (instr_remu)		new_ascii_instr = "remu";
+
+		if (instr_csrrw)	new_ascii_instr = "csrrw";
+		if (instr_csrrs)	new_ascii_instr = "csrrs";
+		if (instr_csrrc)	new_ascii_instr = "csrrc";
+		if (instr_csrrwi)	new_ascii_instr = "csrrwi";
+		if (instr_csrrsi)	new_ascii_instr = "csrrsi";
+		if (instr_csrrci)	new_ascii_instr = "csrrci";
+		if (instr_ecall)	new_ascii_instr = "ecall";
+		if (instr_ebreak)	new_ascii_instr = "ebreak";
+		if (instr_mret)		new_ascii_instr = "mret";
 	end
 
 	// ALU and comparison
@@ -499,7 +556,7 @@ module cpu_core (
 
 	// CPU execution and register file
 	localparam cpu_state_fetch          = 4'd0;
-	localparam cpu_state_ld_rs          = 4'd1;
+	localparam cpu_state_prep          = 4'd1;
 	localparam cpu_state_exec           = 4'd2;
 	localparam cpu_state_stmem          = 4'd3;
 	localparam cpu_state_ldmem          = 4'd4;
@@ -561,11 +618,11 @@ module cpu_core (
 					// this means having fetched instruction
 					if ((mem_xfer & mem_req_instr)) begin
 						mem_req_instr <= 0;
-						cpu_state <= cpu_state_ld_rs;
+						cpu_state <= cpu_state_prep;
 					end
 				end
 
-				cpu_state_ld_rs: begin
+				cpu_state_prep: begin
 					if (decoder_done) begin
 
 						next_pc <= current_pc + 32'd4;
