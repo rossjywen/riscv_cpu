@@ -492,7 +492,17 @@ module cpu_core (
 			instr_srl || instr_sra:
 				alu_out = alu_shr;
 
+			// CSR Write
+			instr_csrrw || instr_csrrwi:
+				alu_out = alu_op2;
 
+			// CSR Set
+			instr_csrrs || instr_csrrsi:
+				alu_out = alu_op1 | alu_op2;
+
+			// CSR Clear
+			instr_csrrc || instr_csrrci:
+				alu_out = alu_op1 & ~alu_op2;			
 
 		endcase
 	end
@@ -529,6 +539,68 @@ module cpu_core (
 				mem_load_result = 32'bx;
 		endcase
 	end
+
+// RISCV CSR address low 2 bits indicate whether this CSR can be written
+wire csr_illegal_write = csr_req_write && (decoded_csr_addr[11:10] == 2'b11);
+
+// this is important in RISCV mannual
+// 1. CSRRS/CSRRC	will not write CSR if rs1=x0
+// 2. CSRRSI/CSRRCI	will not write CSR if zimm=0
+// 3. CSRRW/CSRRWI	will write CSR regardless of rs1/zimm
+wire csr_req_write =
+    instr_csrrw || instr_csrrwi ||
+    ((instr_csrrs  || instr_csrrc  || instr_csrrsi || instr_csrrci) && (decoded_rs1 != 5'd0));
+
+	reg csr_addr_valid;
+
+	always @(*) begin
+		csr_addr_valid = 1'b0;
+
+		case (decoded_csr_addr)
+			CSR_MSTATUS,
+			CSR_MISA,
+			CSR_MIE,
+			CSR_MTVEC,
+			CSR_MSCRATCH,
+			CSR_MEPC,
+			CSR_MCAUSE,
+			CSR_MTVAL,
+			CSR_MIP,
+			CSR_MVENDORID,
+			CSR_MARCHID,
+			CSR_MIMPID,
+			CSR_MHARTID,
+			CSR_MCONFIGPTR:
+				csr_addr_valid = 1'b1;
+
+			default:
+				csr_addr_valid = 1'b0;
+		endcase
+	end
+
+
+	reg [31:0] csr_old_data;
+
+	always @(*) begin
+		case (decoded_csr_addr)
+			CSR_MSTATUS: csr_old_data = csr_mstatus;
+			CSR_MISA: csr_old_data = CSR_MISA_VALUE;
+			CSR_MIE: csr_old_data = csr_mie;
+			CSR_MTVEC: csr_old_data = csr_mtvec;
+			CSR_MSCRATCH: csr_old_data = csr_mscratch;
+			CSR_MEPC: csr_old_data = csr_mepc;
+			CSR_MCAUSE: csr_old_data = csr_mcause;
+			CSR_MTVAL: csr_old_data = csr_mtval;
+			CSR_MIP: csr_old_data = csr_mip;
+			CSR_MVENDORID: csr_old_data = CSR_MVENDORID_VALUE;
+			CSR_MARCHID: csr_old_data = CSR_MARCHID_VALUE;
+			CSR_MIMPID: csr_old_data = CSR_MIMPID_VALUE;
+			CSR_MHARTID: csr_old_data = CSR_MHARTID_VALUE;
+			CSR_MCONFIGPTR: csr_old_data = CSR_MCONFIGPTR_VALUE;
+			default: csr_old_data = 32'b0;
+		endcase
+	end
+
 
 	// for Multiply and Divide instructions
 	rv32m_unit u_muldiv (
@@ -587,6 +659,45 @@ module cpu_core (
 	wire        muldiv_done;
 	wire [31:0] muldiv_result;
 
+	// Machine-mode CSR registers
+	reg [31:0] csr_mstatus;   // 0x300 - Machine status
+	reg [31:0] csr_mie;       // 0x304 - Interrupt enable
+	reg [31:0] csr_mtvec;     // 0x305 - Trap vector base
+	reg [31:0] csr_mscratch;  // 0x340 - Scratch register
+	reg [31:0] csr_mepc;      // 0x341 - Exception PC
+	reg [31:0] csr_mcause;    // 0x342 - Trap cause
+	reg [31:0] csr_mtval;     // 0x343 - Trap value
+	// wire [31:0] csr_mip = (uart_irq  ? 32'h0000_0800 : 32'b0) | (timer_irq ? 32'h0000_0080 : 32'b0); // 0x344 - Interrupt pending
+	wire [31:0] csr_mip = 32'b0;
+
+	// CSR addresses
+	localparam [11:0] CSR_MSTATUS		= 12'h300;
+	localparam [11:0] CSR_MISA			= 12'h301;
+	localparam [11:0] CSR_MIE			= 12'h304;
+	localparam [11:0] CSR_MTVEC			= 12'h305;
+	localparam [11:0] CSR_MSCRATCH		= 12'h340;
+	localparam [11:0] CSR_MEPC			= 12'h341;
+	localparam [11:0] CSR_MCAUSE		= 12'h342;
+	localparam [11:0] CSR_MTVAL			= 12'h343;
+	localparam [11:0] CSR_MIP			= 12'h344;
+	localparam [11:0] CSR_MVENDORID		= 12'hF11;
+	localparam [11:0] CSR_MARCHID		= 12'hF12;
+	localparam [11:0] CSR_MIMPID		= 12'hF13;
+	localparam [11:0] CSR_MHARTID		= 12'hF14;
+	localparam [11:0] CSR_MCONFIGPTR	= 12'hF15;
+
+	// Writable-bit masks for M-mode-only implementation
+	localparam [31:0] MSTATUS_WRITE_MASK = 32'h0000_0088;
+	localparam [31:0] MIE_WRITE_MASK     = 32'h0000_0880;
+
+	// CSR with Fixed values
+	localparam [31:0] CSR_MISA_VALUE       = 32'h4000_1100; // RV32IM
+	localparam [31:0] CSR_MVENDORID_VALUE  = 32'h0000_0000; // No JEDEC vendor ID
+	localparam [31:0] CSR_MARCHID_VALUE    = 32'h0000_0000; // Architecture ID unspecified
+	localparam [31:0] CSR_MIMPID_VALUE     = 32'h0000_0000; // Implementation ID unspecified
+	localparam [31:0] CSR_MHARTID_VALUE    = 32'h0000_0000; // Single hart, ID 0
+	localparam [31:0] CSR_MCONFIGPTR_VALUE = 32'h0000_0000; // No configuration structure
+
 	// Register file reset loop index
 	integer i;
 
@@ -601,6 +712,15 @@ module cpu_core (
 			mem_req_load <= 0;
 			mem_req_store <= 0;
 			mem_store_data <= 32'b0;
+
+			// CSR
+			csr_mstatus  <= 32'h0000_1800;
+			csr_mie      <= 32'b0;
+			csr_mtvec    <= 32'b0;
+			csr_mscratch <= 32'b0;
+			csr_mepc     <= 32'b0;
+			csr_mcause   <= 32'b0;
+			csr_mtval    <= 32'b0;
 
 			for (i = 0; i < 32; i = i + 1) begin
 				cpuregs[i] <= 32'd0;
@@ -628,7 +748,6 @@ module cpu_core (
 						next_pc <= current_pc + 32'd4;
 
 						case (1'b1)
-
 							// LUI, AUIPC, JAL
 							// Operand 1: zero or PC
 							// Operand 2: immediate
@@ -706,6 +825,17 @@ module cpu_core (
 								cpu_state <= cpu_state_muldiv;
 							end
 
+							// Zicsr instructions
+							instr_csrrw  || instr_csrrs  || instr_csrrc ||
+							instr_csrrwi || instr_csrrsi || instr_csrrci: begin
+								alu_op1 <= csr_old_data;
+								alu_op2 <= (instr_csrrwi || instr_csrrsi || instr_csrrci)
+										? {27'b0, decoded_rs1}
+										: cpuregs_rs1;
+
+								cpu_state <= cpu_state_exec;
+							end
+
 							// Illegal or unsupported instruction
 							default: begin
 								cpu_state <= cpu_state_trap;
@@ -725,7 +855,6 @@ module cpu_core (
 						instr_add || instr_sub || instr_sll ||
 						instr_slt || instr_sltu || instr_xor ||
 						instr_srl || instr_sra || instr_or || instr_and: begin
-
 							if (decoded_rd != 5'd0)
 								cpuregs[decoded_rd] <= alu_out;
 
@@ -763,7 +892,6 @@ module cpu_core (
 						instr_beq || instr_bne ||
 						instr_blt || instr_bge ||
 						instr_bltu || instr_bgeu: begin
-
 							if (alu_compare_result) begin
 								if ((current_pc + decoded_imm) & 32'h2)
 									cpu_state <= cpu_state_trap;
@@ -772,6 +900,62 @@ module cpu_core (
 									cpu_state <= cpu_state_fetch;
 								end
 							end else begin
+								cpu_state <= cpu_state_fetch;
+							end
+						end
+
+						// Zicsr instructions
+						instr_csrrw  || instr_csrrs  || instr_csrrc ||
+						instr_csrrwi || instr_csrrsi || instr_csrrci: begin
+							if (csr_illegal_write || !csr_addr_valid) begin
+								cpu_state <= cpu_state_trap;
+							end else begin
+								if (decoded_rd != 5'd0)
+									// csr_old_data was piped into alu_op1
+									cpuregs[decoded_rd] <= alu_op1;
+
+								if (csr_req_write) begin
+									case (decoded_csr_addr)
+										// CSR register writes
+										CSR_MSTATUS: begin
+											csr_mstatus <= (alu_out & MSTATUS_WRITE_MASK) | 32'h0000_1800;
+										end
+
+										CSR_MIE: begin
+											csr_mie <= alu_out & MIE_WRITE_MASK;
+										end
+
+										CSR_MTVEC: begin
+											csr_mtvec <= {alu_out[31:2], 2'b00};
+										end
+
+										CSR_MSCRATCH: begin
+											csr_mscratch <= alu_out;
+										end
+
+										CSR_MEPC: begin
+											csr_mepc <= {alu_out[31:2], 2'b00};
+										end
+
+										CSR_MCAUSE: begin
+											csr_mcause <= alu_out;
+										end
+
+										CSR_MTVAL: begin
+											csr_mtval <= alu_out;
+										end
+
+										// Fixed-value or hardware-controlled CSRs
+										CSR_MISA, CSR_MIP: begin
+											// Legal write, value unchanged
+										end
+
+										default: begin
+											// Invalid CSR already rejected above
+										end
+									endcase
+								end
+
 								cpu_state <= cpu_state_fetch;
 							end
 						end
