@@ -698,6 +698,19 @@ wire csr_req_write =
 	localparam [31:0] CSR_MHARTID_VALUE    = 32'h0000_0000; // Single hart, ID 0
 	localparam [31:0] CSR_MCONFIGPTR_VALUE = 32'h0000_0000; // No configuration structure
 
+	// Trap context
+	reg [31:0] trap_epc;
+	reg [31:0] trap_cause;
+	reg [31:0] trap_tval;
+
+	// Machine exception cause codes
+	localparam [31:0] EXC_INST_MISALIGNED  = 32'd0;
+	localparam [31:0] EXC_ILLEGAL_INST     = 32'd2;
+	localparam [31:0] EXC_BREAKPOINT       = 32'd3;
+	localparam [31:0] EXC_LOAD_MISALIGNED  = 32'd4;
+	localparam [31:0] EXC_STORE_MISALIGNED = 32'd6;
+	localparam [31:0] EXC_ECALL_M          = 32'd11;
+
 	// Register file reset loop index
 	integer i;
 
@@ -721,6 +734,11 @@ wire csr_req_write =
 			csr_mepc     <= 32'b0;
 			csr_mcause   <= 32'b0;
 			csr_mtval    <= 32'b0;
+
+			// trap mode
+			trap_epc   <= 32'b0;
+			trap_cause <= 32'b0;
+			trap_tval  <= 32'b0;
 
 			for (i = 0; i < 32; i = i + 1) begin
 				cpuregs[i] <= 32'd0;
@@ -836,8 +854,44 @@ wire csr_req_write =
 								cpu_state <= cpu_state_exec;
 							end
 
+							// Environment call from M-mode
+							instr_ecall: begin
+								trap_epc   <= current_pc;
+								trap_cause <= EXC_ECALL_M;
+								trap_tval  <= 32'b0;
+
+								cpu_state <= cpu_state_trap;
+							end
+
+							// Breakpoint exception
+							instr_ebreak: begin
+								trap_epc   <= current_pc;
+								trap_cause <= EXC_BREAKPOINT;
+								trap_tval  <= 32'b0;
+
+								cpu_state <= cpu_state_trap;
+							end
+
+							// Machine trap return
+							instr_mret: begin
+								// Return to mepc
+								next_pc <= csr_mepc;
+
+								// MIE  <- MPIE
+								// MPIE <- 1
+								// MPP  <- 3 (M-mode only)
+								csr_mstatus <= 32'h0000_1880 |
+											(csr_mstatus[7] ? 32'h0000_0008 : 32'b0);
+
+								cpu_state <= cpu_state_fetch;
+							end
+
 							// Illegal or unsupported instruction
 							default: begin
+								trap_epc   <= current_pc;
+								trap_cause <= EXC_ILLEGAL_INST;
+								trap_tval  <= instr_word; // to tell the word causing exception
+
 								cpu_state <= cpu_state_trap;
 							end
 
@@ -864,6 +918,10 @@ wire csr_req_write =
 						// JAL
 						instr_jal: begin
 							if (alu_out[1:0] != 2'b00) begin
+								trap_epc   <= current_pc;
+								trap_cause <= EXC_INST_MISALIGNED;
+								trap_tval  <= alu_out;
+
 								cpu_state <= cpu_state_trap;
 							end else begin
 								if (decoded_rd != 5'd0)
@@ -878,6 +936,10 @@ wire csr_req_write =
 						instr_jalr: begin
 							// COMPRESSED_ISA isn't supported now
 							if (alu_out[1]) begin
+								trap_epc   <= current_pc;
+								trap_cause <= EXC_INST_MISALIGNED;
+								trap_tval  <= alu_out & 32'hFFFF_FFFE;
+
 								cpu_state <= cpu_state_trap;
 							end else begin
 								if (decoded_rd != 5'd0)
@@ -893,9 +955,13 @@ wire csr_req_write =
 						instr_blt || instr_bge ||
 						instr_bltu || instr_bgeu: begin
 							if (alu_compare_result) begin
-								if ((current_pc + decoded_imm) & 32'h2)
+								if ((current_pc + decoded_imm) & 32'h2) begin
+									trap_epc   <= current_pc;
+									trap_cause <= EXC_INST_MISALIGNED;
+									trap_tval  <= current_pc + decoded_imm;
+
 									cpu_state <= cpu_state_trap;
-								else begin
+								end else begin
 									next_pc <= current_pc + decoded_imm;
 									cpu_state <= cpu_state_fetch;
 								end
@@ -908,6 +974,10 @@ wire csr_req_write =
 						instr_csrrw  || instr_csrrs  || instr_csrrc ||
 						instr_csrrwi || instr_csrrsi || instr_csrrci: begin
 							if (csr_illegal_write || !csr_addr_valid) begin
+								trap_epc   <= current_pc;
+								trap_cause <= EXC_ILLEGAL_INST;
+								trap_tval  <= instr_word;
+
 								cpu_state <= cpu_state_trap;
 							end else begin
 								if (decoded_rd != 5'd0)
@@ -960,8 +1030,12 @@ wire csr_req_write =
 							end
 						end
 
-						// Illegal / Unsupported Instruction
+						// Illegal / Unsupported Instruction (should not reach here)
 						default: begin
+							trap_epc   <= current_pc;
+							trap_cause <= EXC_ILLEGAL_INST;
+							trap_tval  <= instr_word;
+
 							cpu_state <= cpu_state_trap;
 						end
 					endcase
@@ -969,6 +1043,10 @@ wire csr_req_write =
 
 				cpu_state_ldmem: begin
 					if (data_misaligned) begin
+						trap_epc   <= current_pc;
+						trap_cause <= EXC_LOAD_MISALIGNED;
+						trap_tval  <= alu_out;
+
 						cpu_state <= cpu_state_trap;
 					end else begin
 						// Request a data read
@@ -991,6 +1069,10 @@ wire csr_req_write =
 
 				cpu_state_stmem: begin
 					if (data_misaligned) begin
+						trap_epc   <= current_pc;
+						trap_cause <= EXC_STORE_MISALIGNED;
+						trap_tval  <= alu_out;
+
 						cpu_state <= cpu_state_trap;
 					end else begin
 						// Request a data write
@@ -1019,10 +1101,23 @@ wire csr_req_write =
 				end
 
 				cpu_state_trap: begin
-					mem_req_instr <= 0;
-					mem_req_load <= 0;
-					mem_req_store <= 0;
-					cpu_state <= cpu_state_trap;
+					// Save exception context to architectural CSRs
+					csr_mepc   <= trap_epc;
+					csr_mcause <= trap_cause;
+					csr_mtval  <= trap_tval;
+
+					// Trap entry:
+					// MPIE <- MIE
+					// MIE  <- 0
+					// MPP  <- 3 (M-mode only)
+					csr_mstatus <= 32'h0000_1800 |
+								(csr_mstatus[3] ? 32'h0000_0080 : 32'b0);
+
+					// mtvec direct mode
+					next_pc <= {csr_mtvec[31:2], 2'b00};
+
+					// Next instruction fetch starts from mtvec
+					cpu_state <= cpu_state_fetch;
 				end
 			endcase
 		end
