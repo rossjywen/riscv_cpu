@@ -31,11 +31,16 @@ module soc_top (
 	wire awvalid, awready, wvalid, wready, bvalid, bready;
 	wire arvalid, arready, rvalid, rready;
 
+	// peripheral interrupt
+	wire uart_irq, timer_irq;
+
 	cpu_core u_cpu (
 		.clk(clk), .rst_n(rst_n),
 		.mem_valid(cpu_mem_valid), .mem_ready(cpu_mem_ready),
 		.mem_addr(cpu_mem_addr), .mem_wdata(cpu_mem_wdata),
-		.mem_wstrb(cpu_mem_wstrb), .mem_data(cpu_mem_rdata)
+		.mem_wstrb(cpu_mem_wstrb), .mem_data(cpu_mem_rdata),
+		.irq_external(uart_irq),
+		.irq_timer(1'b0)
 	);
 
 	mem_interconnect u_map (
@@ -104,6 +109,6 @@ module soc_top (
 		.s_axi_rready(rready),
 		.rx(uart_rx), 
 		.tx(uart_tx), 
-		.interrupt()
+		.interrupt(uart_irq)
 	);
 endmodule

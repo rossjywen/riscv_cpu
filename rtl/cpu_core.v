@@ -2,12 +2,17 @@ module cpu_core (
 	input wire          rst_n,
 	input wire          clk,
 
+	// memory
 	input wire          mem_ready,
 	input wire [31:0]   mem_data,
 	output reg          mem_valid,
 	output reg [29:0]   mem_addr,   // aligned to 4 bytes
 	output reg [31:0] mem_wdata,
-	output reg [3:0]  mem_wstrb
+	output reg [3:0]  mem_wstrb,
+
+	// interrupt
+	input wire irq_external,
+	input wire irq_timer
 );
 
 	// Memory interface
@@ -667,8 +672,9 @@ wire csr_req_write =
 	reg [31:0] csr_mepc;      // 0x341 - Exception PC
 	reg [31:0] csr_mcause;    // 0x342 - Trap cause
 	reg [31:0] csr_mtval;     // 0x343 - Trap value
-	// wire [31:0] csr_mip = (uart_irq  ? 32'h0000_0800 : 32'b0) | (timer_irq ? 32'h0000_0080 : 32'b0); // 0x344 - Interrupt pending
-	wire [31:0] csr_mip = 32'b0;
+	wire [31:0] csr_mip =     // 0x344 - Interrupt pending
+		(irq_external  ? 32'h0000_0800 : 32'b0) | 
+		(irq_timer ? 32'h0000_0080 : 32'b0); 
 
 	// CSR addresses
 	localparam [11:0] CSR_MSTATUS		= 12'h300;
@@ -711,6 +717,11 @@ wire csr_req_write =
 	localparam [31:0] EXC_STORE_MISALIGNED = 32'd6;
 	localparam [31:0] EXC_ECALL_M          = 32'd11;
 
+	// interrupt trigger signal
+	wire irq_ext_trigger = csr_mstatus[3] && csr_mie[11] && csr_mip[11];
+	wire irq_tim_trigger = csr_mstatus[3] && csr_mie[7] && csr_mip[7];
+
+
 	// Register file reset loop index
 	integer i;
 
@@ -749,8 +760,17 @@ wire csr_req_write =
 			case (cpu_state)
 				cpu_state_fetch: begin
 					if (!mem_req_instr) begin
-						mem_req_instr <= 1;
-						current_pc <= next_pc;
+						// check interrupt first
+						if (irq_ext_trigger | irq_tim_trigger) begin // interrupt handling
+							trap_epc   <= next_pc;
+							trap_cause <=  irq_ext_trigger? 32'h8000_000B : 32'h8000_0007;
+							trap_tval  <= 32'b0;
+
+							cpu_state <= cpu_state_trap;		
+						end else begin
+							mem_req_instr <= 1;
+							current_pc <= next_pc;
+						end
 					end
 
 					// this means having fetched instruction
