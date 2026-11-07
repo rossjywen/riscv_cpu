@@ -1,4 +1,5 @@
 // RV32IM SoC top: CPU + BRAM + native timer + native UART.
+// Receives an 80 MHz clock and synchronized reset from the board wrapper.
 // All blocks are clocked from the SAME clock. Reset is active-low.
 module soc_top (
 	input  wire clk,

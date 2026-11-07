@@ -4,8 +4,12 @@
 ## - rename the used ports (in each line, after get_ports) according to the top level signal names in the project
 
 ## Clock signal
+# The board oscillator remains 100 MHz. arty_a7_top generates the 80 MHz
+# SoC clock through Clocking Wizard; Vivado derives that generated clock.
 set_property -dict { PACKAGE_PIN E3 IOSTANDARD LVCMOS33 } [get_ports {clk}]
-create_clock -name sys_clk_pin -period 10.000 -waveform {0 5} [get_ports {clk}]
+# clk_wiz_0.xdc supplies the 100 MHz primary clock; do not define it twice.
+# Only for a standalone design WITHOUT Clocking Wizard, uncomment:
+#create_clock -name sys_clk_pin -period 10.000 -waveform {0 5} [get_ports {clk}]
 
 ## Switches
 #set_property -dict { PACKAGE_PIN A8    IOSTANDARD LVCMOS33 } [get_ports { sw[0] }]; #IO_L12N_T1_MRCC_16 Sch=sw[0]

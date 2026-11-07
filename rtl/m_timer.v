@@ -21,7 +21,7 @@ module m_timer (
 	localparam [29:0] ADDR_MTIMECMP_LO = 30'h0400_0402;
 	localparam [29:0] ADDR_MTIMECMP_HI = 30'h0400_0403;
 
-	// 100 MHz clock / 10,000 = 10 kHz timer
+	// 80 MHz clock / 8,000 = 10 kHz timer
 	// One timer tick = 100 us
 	reg [13:0] clock_divider;
 
@@ -29,7 +29,7 @@ module m_timer (
 	reg [63:0] mtime;
 	reg [63:0] mtimecmp;
 
-	wire timer_tick = (clock_divider == 14'd9999);
+	wire timer_tick = (clock_divider == 14'd7999);
 
 	// Machine Timer Interrupt
 	assign timer_irq = (mtime >= mtimecmp);

@@ -14,9 +14,9 @@ A simple, multi-cycle 32-bit RISC-V CPU and SoC written in Verilog, targeting th
 - Completed synthesis, placement, routing, and bitstream generation in Vivado 2025.1 for the Arty A7-100T.
 
 The FPGA bring-up above used the earlier AXI UART Lite design. The custom UART
-replacement is verified in simulation; a new FPGA bitstream still needs board
-validation. `rtl/axi_lite_master.v` remains as a reference and is not instantiated
-by `soc_top`.
+replacement and 80 MHz board wrapper are verified in simulation; a new FPGA
+bitstream still needs board validation. `rtl/axi_lite_master.v` remains as a
+reference and is not instantiated by `soc_top`.
 
 ## Supported Instructions
 
@@ -39,7 +39,7 @@ by `soc_top`.
 ## Hardware and Memory Map
 
 - **FPGA board:** Digilent Arty A7-100T (Artix-7 `xc7a100t`)
-- **Clock:** 100 MHz (`clk` on E3)
+- **Clock:** 100 MHz board oscillator (`clk` on E3), converted to an 80 MHz SoC clock by Clocking Wizard in `arty_a7_top`
 - **CPU reset:** active low (`rst_n` on C2)
 - **UART:** `uart_tx` on D10 and `uart_rx` on A9; 115200 baud, 8 data bits, no parity, 1 stop bit
 - **Memory interface:** CPU issues 30-bit *word addresses* (`mem_addr = byte_address[31:2]`); BRAM, UART and timer receive these full word addresses directly.
@@ -58,7 +58,7 @@ UART/timer windows read zero and ignore writes.
 
 ### Machine timer registers
 
-The timer runs at 10 kHz (one tick every 100 µs with the 100 MHz input clock).
+The timer runs at 10 kHz (one tick every 100 µs with the 80 MHz SoC clock).
 Each register below supports 32-bit reads and byte-enabled writes.
 
 | Byte address | Register |
@@ -94,14 +94,35 @@ continues to use polling with the same register addresses and status bits.
 
 ## Firmware and FPGA Bring-up
 
-Include `rtl/uart.v` in Vivado's Design Sources. The current `soc_top` does not
-require an AXI UART Lite IP or an AXI bridge.
+Include `rtl/uart.v` and `rtl/arty_a7_top.v` in Vivado's Design Sources.
+The board top is `arty_a7_top`; `soc_top` remains independent of vendor clock IP.
+With the existing Arty A7-100T project open, run this in the Vivado Tcl Console:
+
+```tcl
+source /home/ross/code/riscv_cpu/scripts/create_clocking_wizard.tcl
+```
+
+The script creates `clk_wiz_0` if absent: single-ended 100 MHz input, one
+80 MHz output, active-low `resetn`, and `locked` enabled. If the IP already
+exists, the script checks and reuses it without changing its configuration.
+The wrapper connects `resetn` directly to the board's active-low `rst_n`.
+The script generates output products and selects `arty_a7_top` as the synthesis
+top. An already generated compatible IP does not need to be recreated.
+The wrapper holds the SoC in reset until lock, then releases reset after two
+80 MHz rising edges.
+The UART remains at 115200 baud and the timer remains at 10 kHz.
+
+Keep the board input constraint at **10 ns**. Vivado derives the **12.5 ns**
+generated SoC clock through the clock IP. Do not change the physical input
+clock constraint to 12.5 ns. The Clocking Wizard's generated XDC supplies the
+100 MHz input clock; the board XDC keeps the duplicate definition commented out.
+No AXI UART Lite IP or AXI bridge is required.
 
 1. Build the bare-metal firmware using the existing firmware build script. The RISC-V GCC target uses `-march=rv32im -mabi=ilp32`.
 2. Ensure Vivado's Memory File source points to the **latest** `program.mem`. The BRAM contents are included in the bitstream at configuration time.
-3. Run **Synthesis → Implementation → Generate Bitstream** in Vivado. Check timing against the 10 ns clock constraint.
+3. Run **Synthesis → Implementation → Generate Bitstream** in Vivado. Check `report_clocks` for the 100 MHz input and 80 MHz SoC clock, then verify timing after routing.
 4. Connect the board through its Micro-USB JTAG/UART port, open **Hardware Manager**, and choose **Open Target → Auto Connect**.
-5. Program the FPGA using `soc_top.bit`; open a serial terminal at 115200 baud and press the board's **RESET** button to run the firmware again.
+5. Program the FPGA using `arty_a7_top.bit`; open a serial terminal at 115200 baud and press the board's **RESET** button to run the firmware again.
 
 Example Linux UART terminal (verify which interface belongs to the board):
 
@@ -125,13 +146,30 @@ set_param board.repoPaths [list "/home/ross/code/vivado-boards/new/board_files"]
 get_board_parts *arty-a7-a100*
 
 # In Hardware Manager, after connecting the hardware target:
-set_property PROGRAM.FILE {/home/ross/code/vivado_project/rv32_fpga/rv32_fpga.runs/impl_1/soc_top.bit} [get_hw_devices xc7a100t_0]
+set_property PROGRAM.FILE {/home/ross/code/vivado_project/rv32_fpga/rv32_fpga.runs/impl_1/arty_a7_top.bit} [get_hw_devices xc7a100t_0]
 program_hw_devices [get_hw_devices xc7a100t_0]
 
 # Inspect timing in an implemented design
 report_clocks
 report_timing_summary
 ```
+
+## Clock-wrapper Simulation
+
+From `firmware/`, test the board wrapper with the existing greeting image:
+
+```bash
+iverilog -g2012 -DSYNTHESIS -DCLOCK_WIZARD_MODEL -s tb_arty_a7_top \
+  -o /tmp/tb_arty_a7_top ../rtl/*.v ../sim/tb_arty_a7_top.v
+vvp /tmp/tb_arty_a7_top
+```
+
+The explicit `CLOCK_WIZARD_MODEL` define enables a simulation-only clock/lock
+model. It tests reset release, reset-button restart, loss-of-lock handling,
+the 10 kHz timer and the firmware's UART output at 115200 baud. For Vivado IP
+simulation, omit that define and use the generated Clocking Wizard model.
+Keep testbench files in Simulation Sources, not Design Sources. `SYNTHESIS`
+in this Icarus command only suppresses the CPU's verbose simulation trace.
 
 
 ## History

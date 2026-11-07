@@ -1,4 +1,4 @@
-// Native UART: 100 MHz clock, 115200 baud, 8 data bits, no parity, 1 stop bit.
+// Native UART: 80 MHz clock, 115200 baud, 8 data bits, no parity, 1 stop bit.
 // TX and RX each hold one byte; there are no FIFOs.
 //
 // Full WORD addresses, matching bram/m_timer. wstrb == 0 means READ.
@@ -42,10 +42,10 @@ module uart (
 	localparam [29:0] ADDR_STATUS  = 30'h0400_0002;
 	localparam [29:0] ADDR_CONTROL = 30'h0400_0003;
 
-	// 100,000,000 / 115,200 rounded to 868 clocks per bit.
-	// Counters start at zero, so a full bit ends at 867, half a bit at 433.
-	localparam [9:0] BIT_LAST_COUNT      = 10'd867;
-	localparam [9:0] HALF_BIT_LAST_COUNT = 10'd433;
+	// 80,000,000 / 115,200 rounded to 694 clocks per bit.
+	// Counters start at zero, so a full bit ends at 693, half a bit at 346.
+	localparam [9:0] BIT_LAST_COUNT      = 10'd693;
+	localparam [9:0] HALF_BIT_LAST_COUNT = 10'd346;
 
 	localparam [1:0] TX_IDLE  = 2'd0;
 	localparam [1:0] TX_START = 2'd1;

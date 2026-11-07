@@ -15,7 +15,7 @@ module tb_cpu_core;
     reg clk   = 1'b0;
     reg rst_n = 1'b0;
 
-    always #5 clk = ~clk;  // 100 MHz, 10 ns period
+    always #6.25 clk = ~clk;  // 80 MHz, 12.5 ns period
 
     initial begin
         repeat (5) @(negedge clk);

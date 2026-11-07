@@ -19,7 +19,7 @@ module tb_c_program;
     reg clk   = 1'b0;
     reg rst_n = 1'b0;
 
-    always #5 clk = ~clk;  // 100 MHz
+    always #6.25 clk = ~clk;  // 80 MHz
 
     initial begin
         repeat (5) @(negedge clk);
