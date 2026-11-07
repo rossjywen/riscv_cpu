@@ -1,4 +1,4 @@
-// Decode the CPU's native WORD address into BRAM, AXI UART or native timer.
+// Decode the CPU's native WORD address into BRAM, UART or timer.
 // BRAM: 0x0000_0000 - 0x0003_FFFF (256 KiB)
 // UART: 0x1000_0000 - 0x1000_0FFF (4 KiB window)
 // Timer:0x1000_1000 - 0x1000_1FFF (4 KiB window)
@@ -31,14 +31,13 @@ module mem_interconnect (
 	output wire [3:0]  timer_wstrb,
 	input  wire [31:0] timer_rdata,
 
-	// AXI master native request interface
-	output wire        axi_valid,
-	input  wire        axi_ready,
-	output wire [29:0] axi_addr,
-	output wire [31:0] axi_wdata,
-	output wire [3:0]  axi_wstrb,
-	input  wire [31:0] axi_rdata,
-	input  wire        axi_error
+	// UART native interface (full word addresses)
+	output wire        uart_valid,
+	input  wire        uart_ready,
+	output wire [29:0] uart_addr,
+	output wire [31:0] uart_wdata,
+	output wire [3:0]  uart_wstrb,
+	input  wire [31:0] uart_rdata
 );
 
 	// CPU addresses are WORD addresses, so these tests correspond to:
@@ -59,24 +58,22 @@ module mem_interconnect (
 	assign timer_wdata = mem_wdata;
 	assign timer_wstrb = mem_wstrb;
 
-	assign axi_valid = mem_valid && select_uart;
-	assign axi_addr  = mem_addr;
-	assign axi_wdata = mem_wdata;
-	assign axi_wstrb = mem_wstrb;
+	assign uart_valid = mem_valid && select_uart;
+	assign uart_addr  = mem_addr;
+	assign uart_wdata = mem_wdata;
+	assign uart_wstrb = mem_wstrb;
 
 	assign mem_ready = mem_valid && (
-		select_bram ? bram_ready :
-		select_uart ? axi_ready  :
+		select_bram  ? bram_ready  :
+		select_uart  ? uart_ready  :
 		select_timer ? timer_ready :
 		1'b1 // unmapped: return an error completion; do not hang CPU
 	);
 
 	assign mem_rdata = select_bram ? bram_rdata :
-		select_uart ? axi_rdata :
+		select_uart ? uart_rdata :
 		select_timer ? timer_rdata : 32'b0;
 
-	assign mem_error = mem_valid && (
-		unmapped || (select_uart && axi_ready && axi_error)
-	);
+	assign mem_error = mem_valid && unmapped;
 
 endmodule

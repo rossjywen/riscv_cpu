@@ -1,6 +1,6 @@
 # RV32IM SoC on Arty A7-100T
 
-A simple, multi-cycle 32-bit RISC-V CPU and SoC written in Verilog, targeting the Digilent Arty A7-100T FPGA. The project currently runs bare-metal C code from on-chip Block RAM and communicates with a host PC through an AXI4-Lite UART peripheral.
+A simple, multi-cycle 32-bit RISC-V CPU and SoC written in Verilog, targeting the Digilent Arty A7-100T FPGA. The project runs bare-metal C code from on-chip Block RAM and communicates with a host PC through a custom native UART peripheral.
 
 ## Current Progress
 
@@ -9,9 +9,14 @@ A simple, multi-cycle 32-bit RISC-V CPU and SoC written in Verilog, targeting th
 - Implemented integer ALU, shifts, comparisons, branches, jumps, and byte/halfword/word loads and stores, including sign extension and byte write enables.
 - Implemented all eight RV32M multiply/divide/remainder instructions in a separate `rv32m_unit` module. Multiplication has been divided into two clock stages to improve timing; division/remainder use an iterative implementation.
 - Implemented a ready/valid native memory interface, an address decoder, and 256 KiB of writable on-chip Block RAM initialized from `program.mem`.
-- Implemented a native-memory-to-AXI4-Lite master bridge and integrated the AMD AXI UART Lite IP.
+- Implemented a custom native UART with TX/RX, one-byte buffers and level interrupts. The SoC now connects BRAM, UART and the machine timer directly to the native memory interface.
 - Built and executed a bare-metal C UART "Hello RISC-V!" program on the physical FPGA. UART transmission and the CPU reset button have been verified.
 - Completed synthesis, placement, routing, and bitstream generation in Vivado 2025.1 for the Arty A7-100T.
+
+The FPGA bring-up above used the earlier AXI UART Lite design. The custom UART
+replacement is verified in simulation; a new FPGA bitstream still needs board
+validation. `rtl/axi_lite_master.v` remains as a reference and is not instantiated
+by `soc_top`.
 
 ## Supported Instructions
 
@@ -37,17 +42,19 @@ A simple, multi-cycle 32-bit RISC-V CPU and SoC written in Verilog, targeting th
 - **Clock:** 100 MHz (`clk` on E3)
 - **CPU reset:** active low (`rst_n` on C2)
 - **UART:** `uart_tx` on D10 and `uart_rx` on A9; 115200 baud, 8 data bits, no parity, 1 stop bit
-- **Memory interface:** CPU issues 30-bit *word addresses* (`mem_addr = byte_address[31:2]`); the AXI bridge reconstructs the corresponding byte addresses.
+- **Memory interface:** CPU issues 30-bit *word addresses* (`mem_addr = byte_address[31:2]`); BRAM, UART and timer receive these full word addresses directly.
 
 | Byte address range | Size | Device |
 | --- | ---: | --- |
 | `0x00000000`–`0x0003FFFF` | 256 KiB | On-chip BRAM (program + data) |
-| `0x10000000`–`0x10000FFF` | 4 KiB window | AXI UART Lite |
+| `0x10000000`–`0x10000FFF` | 4 KiB window | Native UART |
 | `0x10001000`–`0x10001FFF` | 4 KiB window | Native machine timer (`mtime` / `mtimecmp`) |
 
-The timer connects directly to the native memory interface, alongside BRAM.
-Only the UART uses the AXI4-Lite bridge. Timer requests retain the full word
-address; the interconnect does not subtract the timer base address.
+BRAM, UART and timer connect directly to the native memory interface.
+The interconnect selects one target and returns its ready/data response;
+it does not subtract peripheral base addresses. Unmapped addresses complete
+with zero data and `mem_error=1`. Unimplemented register offsets within the
+UART/timer windows read zero and ignore writes.
 
 ### Machine timer registers
 
@@ -66,20 +73,29 @@ the trap handler and enable `mie.MTIE` and `mstatus.MIE` to take timer interrupt
 the current UART demo still uses polling. Unimplemented offsets within the
 timer window read as zero and ignore writes.
 
-### AXI UART Lite registers
+### Native UART registers
 
-The UART IP uses the following offsets relative to `UART_BASE = 0x10000000`:
+`rtl/uart.v` uses the following offsets relative to `UART_BASE = 0x10000000`.
+TX and RX each hold one byte, with no FIFO. Writes to TX and Control use
+`wstrb[0]`. A TX write while busy is ignored; the polling firmware checks bit 3
+before writing.
 
 | Offset | Register | Access | Notes |
 | --- | --- | --- | --- |
-| `0x00` | RX FIFO | Read | Received data is in bits `[7:0]` |
-| `0x04` | TX FIFO | Write | Transmit data is in bits `[7:0]` |
-| `0x08` | Status | Read | Bit 0: RX data valid; bit 3: TX FIFO full |
-| `0x0C` | Control | Write | Bit 0: reset TX FIFO; bit 1: reset RX FIFO; bit 4: interrupt enable |
+| `0x00` | RX data | Read | Bits `[7:0]`; reading consumes the received byte |
+| `0x04` | TX data | Write | Bits `[7:0]`; reading returns zero |
+| `0x08` | Status | Read | Bit 0: RX valid; bit 1: RX full; bit 2: TX idle; bit 3: TX busy; bit 4: interrupts enabled |
+| `0x0C` | Control | Read/write | Bit 0: reset TX; bit 1: reset RX; bit 4: interrupt enable; only bit 4 reads back |
 
-The current firmware uses polling, so no interrupt controller or interrupt-related ISA/CSR support is required for UART transmission/reception.
+Status bits 5/6 report RX overrun/framing error; bit 8 reports TX completion.
+Reading Status clears these sticky flags. When enabled, the UART interrupt
+remains high until RX data and sticky flags are serviced. The current firmware
+continues to use polling with the same register addresses and status bits.
 
 ## Firmware and FPGA Bring-up
+
+Include `rtl/uart.v` in Vivado's Design Sources. The current `soc_top` does not
+require an AXI UART Lite IP or an AXI bridge.
 
 1. Build the bare-metal firmware using the existing firmware build script. The RISC-V GCC target uses `-march=rv32im -mabi=ilp32`.
 2. Ensure Vivado's Memory File source points to the **latest** `program.mem`. The BRAM contents are included in the bitstream at configuration time.
