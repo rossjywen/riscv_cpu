@@ -43,7 +43,28 @@ A simple, multi-cycle 32-bit RISC-V CPU and SoC written in Verilog, targeting th
 | --- | ---: | --- |
 | `0x00000000`–`0x0003FFFF` | 256 KiB | On-chip BRAM (program + data) |
 | `0x10000000`–`0x10000FFF` | 4 KiB window | AXI UART Lite |
-| `0x10001000`–`0x10001FFF` | 4 KiB window | Reserved for a future timer (not implemented) |
+| `0x10001000`–`0x10001FFF` | 4 KiB window | Native machine timer (`mtime` / `mtimecmp`) |
+
+The timer connects directly to the native memory interface, alongside BRAM.
+Only the UART uses the AXI4-Lite bridge. Timer requests retain the full word
+address; the interconnect does not subtract the timer base address.
+
+### Machine timer registers
+
+The timer runs at 10 kHz (one tick every 100 µs with the 100 MHz input clock).
+Each register below supports 32-bit reads and byte-enabled writes.
+
+| Byte address | Register |
+| --- | --- |
+| `0x10001000` | `mtime[31:0]` |
+| `0x10001004` | `mtime[63:32]` |
+| `0x10001008` | `mtimecmp[31:0]` |
+| `0x1000100C` | `mtimecmp[63:32]` |
+
+The timer interrupt feeds the CPU's `irq_timer` input. Firmware must configure
+the trap handler and enable `mie.MTIE` and `mstatus.MIE` to take timer interrupts;
+the current UART demo still uses polling. Unimplemented offsets within the
+timer window read as zero and ignore writes.
 
 ### AXI UART Lite registers
 

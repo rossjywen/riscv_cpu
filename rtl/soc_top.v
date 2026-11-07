@@ -1,4 +1,4 @@
-// RV32IM SoC top: CPU + BRAM + AXI4-Lite + AXI UART Lite.
+// RV32IM SoC top: CPU + BRAM + native timer + AXI4-Lite + AXI UART Lite.
 // Generate axi_uartlite_0 IP in Vivado before synthesis.
 // Check the generated IP instantiation template for address-port widths.
 // All blocks are clocked from the SAME clock. Reset is active-low.
@@ -18,6 +18,11 @@ module soc_top (
 	wire [29:0] bram_addr;
 	wire [31:0] bram_wdata, bram_rdata;
 	wire [3:0]  bram_wstrb;
+
+	wire        timer_valid, timer_ready;
+	wire [29:0] timer_addr;
+	wire [31:0] timer_wdata, timer_rdata;
+	wire [3:0]  timer_wstrb;
 
 	wire        axi_valid, axi_ready, axi_error;
 	wire [29:0] axi_addr;
@@ -40,7 +45,7 @@ module soc_top (
 		.mem_addr(cpu_mem_addr), .mem_wdata(cpu_mem_wdata),
 		.mem_wstrb(cpu_mem_wstrb), .mem_data(cpu_mem_rdata),
 		.irq_external(uart_irq),
-		.irq_timer(1'b0)
+		.irq_timer(timer_irq)
 	);
 
 	mem_interconnect u_map (
@@ -51,6 +56,9 @@ module soc_top (
 		.bram_valid(bram_valid), .bram_ready(bram_ready),
 		.bram_addr(bram_addr), .bram_wdata(bram_wdata),
 		.bram_wstrb(bram_wstrb), .bram_rdata(bram_rdata),
+		.timer_valid(timer_valid), .timer_ready(timer_ready),
+		.timer_addr(timer_addr), .timer_wdata(timer_wdata),
+		.timer_wstrb(timer_wstrb), .timer_rdata(timer_rdata),
 		.axi_valid(axi_valid), .axi_ready(axi_ready),
 		.axi_addr(axi_addr), .axi_wdata(axi_wdata),
 		.axi_wstrb(axi_wstrb), .axi_rdata(axi_rdata),
@@ -64,22 +72,42 @@ module soc_top (
 		.wstrb(bram_wstrb), .data(bram_rdata)
 	);
 
+	m_timer u_timer (
+		.clk(clk), .rst_n(rst_n),
+		.valid(timer_valid), .ready(timer_ready),
+		.addr(timer_addr), .wdata(timer_wdata),
+		.wstrb(timer_wstrb), .data(timer_rdata),
+		.timer_irq(timer_irq)
+	);
+
 	axi_lite_master u_axi (
 		.clk(clk), .rst_n(rst_n),
-		.req_valid(axi_valid), .req_ready(axi_ready),
-		.req_addr(axi_addr), .req_wdata(axi_wdata),
-		.req_wstrb(axi_wstrb), .req_rdata(axi_rdata),
+		.req_valid(axi_valid),
+		.req_ready(axi_ready),
+		.req_addr(axi_addr),
+		.req_wdata(axi_wdata),
+		.req_wstrb(axi_wstrb),
+		.req_rdata(axi_rdata),
 		.req_error(axi_error),
-		.m_axi_awaddr(awaddr), .m_axi_awprot(awprot),
-		.m_axi_awvalid(awvalid), .m_axi_awready(awready),
-		.m_axi_wdata(wdata), .m_axi_wstrb(wstrb),
-		.m_axi_wvalid(wvalid), .m_axi_wready(wready),
-		.m_axi_bresp(bresp), .m_axi_bvalid(bvalid),
+		.m_axi_awaddr(awaddr),
+		.m_axi_awprot(awprot),
+		.m_axi_awvalid(awvalid),
+		.m_axi_awready(awready),
+		.m_axi_wdata(wdata),
+		.m_axi_wstrb(wstrb),
+		.m_axi_wvalid(wvalid),
+		.m_axi_wready(wready),
+		.m_axi_bresp(bresp),
+		.m_axi_bvalid(bvalid),
 		.m_axi_bready(bready),
-		.m_axi_araddr(araddr), .m_axi_arprot(arprot),
-		.m_axi_arvalid(arvalid), .m_axi_arready(arready),
-		.m_axi_rdata(rdata), .m_axi_rresp(rresp),
-		.m_axi_rvalid(rvalid), .m_axi_rready(rready)
+		.m_axi_araddr(araddr),
+		.m_axi_arprot(arprot),
+		.m_axi_arvalid(arvalid),
+		.m_axi_arready(arready),
+		.m_axi_rdata(rdata),
+		.m_axi_rresp(rresp),
+		.m_axi_rvalid(rvalid),
+		.m_axi_rready(rready)
 	);
 
 	// The UART IP sees local register offsets 0x0/0x4/0x8/0xC.

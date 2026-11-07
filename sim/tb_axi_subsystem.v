@@ -1,12 +1,15 @@
 `timescale 1ns / 1ps
 
 // ============================================================================
-// Testbench: mem_interconnect + axi_lite_master
+// Testbench: mem_interconnect + axi_lite_master + m_timer
 //
 // No cpu_core, program.mem, real BRAM or AMD UART IP required.
 // The AXI slave below is a BEHAVIORAL MODEL, not a serial UART transmitter.
 //
 // Run in Vivado: set tb_axi_subsystem as simulation top; run -all
+// Icarus: iverilog -g2012 -s tb_axi_subsystem -o /tmp/tb_axi_subsystem \
+//   rtl/mem_interconnect.v rtl/axi_lite_master.v rtl/m_timer.v sim/tb_axi_subsystem.v
+//   vvp /tmp/tb_axi_subsystem
 // ============================================================================
 module tb_axi_subsystem;
 	reg clk = 1'b0;
@@ -31,6 +34,12 @@ module tb_axi_subsystem;
 	wire [31:0] bram_wdata, bram_rdata;
 	wire [3:0]  bram_wstrb;
 
+	// Native timer interface (real timer RTL)
+	wire        timer_valid, timer_ready, timer_irq;
+	wire [29:0] timer_addr;
+	wire [31:0] timer_wdata, timer_rdata;
+	wire [3:0]  timer_wstrb;
+
 	// Native AXI request interface
 	wire        axi_valid, axi_ready, axi_error;
 	wire [29:0] axi_addr;
@@ -51,7 +60,7 @@ module tb_axi_subsystem;
 	reg [7:0] ar_delay = 0;
 
 	// ------------------------------------------------------------------------
-	// DUT: the user's two unmodified modules
+	// DUT: native address decoder, AXI bridge and machine timer
 	// ------------------------------------------------------------------------
 	mem_interconnect u_map (
 		.mem_valid(mem_valid), .mem_ready(mem_ready),
@@ -60,6 +69,9 @@ module tb_axi_subsystem;
 		.bram_valid(bram_valid), .bram_ready(bram_ready),
 		.bram_addr(bram_addr), .bram_wdata(bram_wdata),
 		.bram_wstrb(bram_wstrb), .bram_rdata(bram_rdata),
+		.timer_valid(timer_valid), .timer_ready(timer_ready),
+		.timer_addr(timer_addr), .timer_wdata(timer_wdata),
+		.timer_wstrb(timer_wstrb), .timer_rdata(timer_rdata),
 		.axi_valid(axi_valid), .axi_ready(axi_ready),
 		.axi_addr(axi_addr), .axi_wdata(axi_wdata),
 		.axi_wstrb(axi_wstrb), .axi_rdata(axi_rdata),
@@ -87,6 +99,14 @@ module tb_axi_subsystem;
 		.valid(bram_valid), .ready(bram_ready),
 		.addr(bram_addr), .wdata(bram_wdata),
 		.wstrb(bram_wstrb), .rdata(bram_rdata)
+	);
+
+	m_timer u_timer (
+		.clk(clk), .rst_n(rst_n),
+		.valid(timer_valid), .ready(timer_ready),
+		.addr(timer_addr), .wdata(timer_wdata),
+		.wstrb(timer_wstrb), .data(timer_rdata),
+		.timer_irq(timer_irq)
 	);
 
 	tb_axi_uart_slave u_uart (
@@ -202,12 +222,22 @@ module tb_axi_subsystem;
 	// Verify native address routing and ensure the unselected port is idle.
 	always @(posedge clk) begin
 		if (rst_n && mem_valid) begin
-			if (bram_valid && axi_valid)
-				$fatal(1, "Both BRAM and AXI selected");
+			if ((bram_valid && axi_valid) || (bram_valid && timer_valid) ||
+			    (axi_valid && timer_valid))
+				$fatal(1, "Multiple memory targets selected");
 			if (mem_addr[29:16] == 0 && !bram_valid)
 				$fatal(1, "BRAM range was not selected");
 			if (mem_addr[29:10] == 20'h10000 && !axi_valid)
 				$fatal(1, "UART range was not selected");
+			if (mem_addr[29:10] == 20'h10001 && !timer_valid)
+				$fatal(1, "Timer range was not selected");
+			if (timer_valid && (timer_addr !== mem_addr ||
+			    timer_wdata !== mem_wdata || timer_wstrb !== mem_wstrb))
+				$fatal(1, "Timer request payload mismatch");
+			if (mem_addr[29:16] != 0 && mem_addr[29:10] != 20'h10000 &&
+			    mem_addr[29:10] != 20'h10001 &&
+			    (bram_valid || axi_valid || timer_valid))
+				$fatal(1, "Unmapped request selected a memory target");
 		end
 	end
 
@@ -247,11 +277,50 @@ module tb_axi_subsystem;
 		access(32'h10000010, 32'b0, 4'h0, 32'b0, 1, 0);
 		access(32'h10000010, 32'hABCDEF01, 4'hF, 32'b0, 1, 0);
 
-		// Outside BRAM and UART: decode error, no AXI transactions.
+		// Timer accesses use the real native peripheral, even after AXI errors.
+		access(32'h10001000, 32'b0, 4'h0, 32'b0, 0, 0);
+		access(32'h10001004, 32'b0, 4'h0, 32'b0, 0, 0);
+		access(32'h10001008, 32'b0, 4'h0, 32'hFFFFFFFF, 0, 0);
+		access(32'h1000100C, 32'b0, 4'h0, 32'hFFFFFFFF, 0, 0);
+		if (timer_irq !== 1'b0)
+			$fatal(1, "Timer interrupt asserted before programming compare");
+
+		// Check full addresses, both halves and byte enables through the decoder.
+		access(32'h10001000, 32'h11223344, 4'hF, 32'b0, 0, 0);
+		access(32'h10001004, 32'h10203040, 4'hF, 32'b0, 0, 0);
+		access(32'h10001000, 32'h00005500, 4'h2, 32'b0, 0, 0);
+		access(32'h10001000, 32'b0, 4'h0, 32'h11225544, 0, 0);
+		access(32'h10001004, 32'b0, 4'h0, 32'h10203040, 0, 0);
+		access(32'h10001008, 32'h89ABCDEF, 4'hF, 32'b0, 0, 0);
+		access(32'h1000100C, 32'h50607080, 4'hF, 32'b0, 0, 0);
+		access(32'h1000100C, 32'h00006600, 4'h2, 32'b0, 0, 0);
+		access(32'h10001008, 32'b0, 4'h0, 32'h89ABCDEF, 0, 0);
+		access(32'h1000100C, 32'b0, 4'h0, 32'h50606680, 0, 0);
+
+		// Program a deadline, let the timer run with no memory request, then rearm.
+		access(32'h10001004, 32'b0, 4'hF, 32'b0, 0, 0);
+		access(32'h10001000, 32'b0, 4'hF, 32'b0, 0, 0);
+		access(32'h10001008, 32'd2, 4'hF, 32'b0, 0, 0);
+		access(32'h1000100C, 32'b0, 4'hF, 32'b0, 0, 0);
+		if (timer_irq !== 1'b0)
+			$fatal(1, "Timer interrupt asserted before deadline");
+		wait (timer_irq === 1'b1);
+		access(32'h10001000, 32'b0, 4'h0, 32'd2, 0, 0);
+		access(32'h10001008, 32'd3, 4'hF, 32'b0, 0, 0);
+		if (timer_irq !== 1'b0)
+			$fatal(1, "Timer interrupt did not clear after rearming");
+
+		// Unimplemented offsets in the timer window read zero and ignore writes.
+		access(32'h10001010, 32'hCAFE1234, 4'hF, 32'b0, 0, 0);
+		access(32'h10001010, 32'b0, 4'h0, 32'b0, 0, 0);
+		access(32'h10001FFC, 32'b0, 4'h0, 32'b0, 0, 0);
+		access(32'h10001008, 32'b0, 4'h0, 32'd3, 0, 0);
+
+		// Outside BRAM, UART and timer: decode error, no peripheral transactions.
 		access(32'h00040000, 32'b0, 4'h0, 32'b0, 1, 0);
 		access(32'h0FFFFFFC, 32'b0, 4'h0, 32'b0, 1, 0);
-		access(32'h10001000, 32'b0, 4'h0, 32'b0, 1, 0); // reserved timer
-		access(32'h10001000, 32'hCAFE1234, 4'hF, 32'b0, 1, 0);
+		access(32'h10002000, 32'b0, 4'h0, 32'b0, 1, 0);
+		access(32'h10002000, 32'hCAFE1234, 4'hF, 32'b0, 1, 0);
 
 		$display("============================================================");
 		$display("PASS: %0d memory mapping + AXI4-Lite transactions", tests);
@@ -263,7 +332,7 @@ module tb_axi_subsystem;
 	end
 
 	initial begin
-		#100000;
+		#500000;
 		$fatal(1, "Global simulation timeout");
 	end
 endmodule
