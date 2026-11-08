@@ -1,6 +1,8 @@
-/firmware/build/
-/firmware/program.mem
+/firmware/bootloader/build/
+/firmware/bootloader/program.mem
+/tests/build/
 xvlog.*
 xelab.*
 xsim.*
+__pycache__/
 

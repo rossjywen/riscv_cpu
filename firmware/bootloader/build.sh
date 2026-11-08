@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build RV32IM bare-metal firmware and generate program.mem for $readmemh.
+# Build only the UART bootloader.
+# Usage: bash firmware/bootloader/build.sh
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUT="$ROOT/build"
-mkdir -p "$OUT"
+if [[ $# -ne 0 ]]; then
+    echo "Usage: bash firmware/bootloader/build.sh" >&2
+    exit 1
+fi
 
 # Prefer the RISC-V GCC cross-compiler; LLVM is a fallback.
 if command -v riscv64-unknown-elf-gcc >/dev/null 2>&1; then
@@ -37,40 +40,41 @@ for tool in "$OBJCOPY" "$OBJDUMP" python3; do
     }
 done
 
-CFLAGS=(
-    -march=rv32im -mabi=ilp32
-    -O0 -g
+TARGET_FLAGS=()
+if [[ "$CC" == clang ]]; then
+    TARGET_FLAGS=(--target=riscv32-unknown-elf -fuse-ld=lld)
+fi
+
+# Modern tools require explicit Zicsr for CSR instructions. The installed
+# GCC 10 toolchain includes them in its older RV32I definition instead.
+ISA=rv32im
+if "$CC" "${TARGET_FLAGS[@]}" -march=rv32im_zicsr -mabi=ilp32 \
+    -E -x c /dev/null -o /dev/null 2>/dev/null; then
+    ISA=rv32im_zicsr
+fi
+
+COMMON_FLAGS=(
+    "${TARGET_FLAGS[@]}" -march="$ISA" -mabi=ilp32
+    -O0 -g -Wall -Wextra
     -ffreestanding -fno-builtin -fno-stack-protector
     -fno-unwind-tables -fno-asynchronous-unwind-tables
     -msmall-data-limit=0 -mno-relax -mno-save-restore
     -nostdlib
     -Wl,--no-relax -Wl,--build-id=none
-    -Wl,-Map,"$OUT/firmware.map"
-    -T "$ROOT/link.ld"
 )
 
-if [[ "$CC" == clang ]]; then
-    CFLAGS=(--target=riscv32-unknown-elf -fuse-ld=lld "${CFLAGS[@]}")
-fi
-
-echo "Compiler: $CC"
-"$CC" "${CFLAGS[@]}" "$ROOT/crt.s" "$ROOT/main.c" \
-    "${EXTRA_LIBS[@]}" -o "$OUT/firmware.elf"
-
-"$OBJCOPY" -O binary "$OUT/firmware.elf" "$OUT/firmware.bin"
-"$OBJDUMP" -d "$OUT/firmware.elf" > "$OUT/firmware.dis"
-
+echo "Compiler: $CC ($ISA)"
+OUT="$ROOT/build"
+mkdir -p "$OUT"
+"$CC" "${COMMON_FLAGS[@]}" -T "$ROOT/link.ld" -Wl,-Map,"$OUT/bootloader.map" \
+    "$ROOT/crt.s" "$ROOT/main.c" "$ROOT/uart_printf.c" \
+    "${EXTRA_LIBS[@]}" -o "$OUT/bootloader.elf"
+"$OBJCOPY" -O binary "$OUT/bootloader.elf" "$OUT/bootloader.bin"
+"$OBJDUMP" -d "$OUT/bootloader.elf" > "$OUT/bootloader.dis"
 if [[ -n "$NM" ]]; then
-    "$NM" -n "$OUT/firmware.elf" > "$OUT/firmware.symbols"
+    "$NM" -n "$OUT/bootloader.elf" > "$OUT/bootloader.symbols"
 else
-    "$OBJDUMP" -t "$OUT/firmware.elf" > "$OUT/firmware.symbols"
+    "$OBJDUMP" -t "$OUT/bootloader.elf" > "$OUT/bootloader.symbols"
 fi
-
-python3 "$ROOT/bin_to_mem.py" "$OUT/firmware.bin" "$ROOT/program.mem"
-
-echo "Build succeeded."
-echo "  program.mem             Verilog BRAM image"
-echo "  build/firmware.elf      Linked ELF"
-echo "  build/firmware.dis      Disassembly"
-echo "  build/firmware.symbols  Symbol addresses"
-echo "  build/firmware.map      Linker memory map"
+python3 "$ROOT/bin_to_mem.py" "$OUT/bootloader.bin" "$ROOT/program.mem" --ram-size 65536
+echo "Built bootloader: $OUT/bootloader.bin"

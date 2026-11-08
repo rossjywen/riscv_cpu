@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Convert a little-endian RV32 firmware binary to a Verilog $readmemh image.
+"""Convert the little-endian RV32 bootloader binary to a Verilog $readmemh image.
 
 Usage:
-    python3 bin_to_mem.py build/firmware.bin program.mem
+    python3 bin_to_mem.py build/bootloader.bin program.mem
 
 Each output line contains one 32-bit word, printed as eight hexadecimal digits.
-The firmware is linked to RAM byte address 0 and the BRAM is word-addressed.
+The bootloader is linked to RAM byte address 0 and the BRAM is word-addressed.
 """
 
 import argparse
@@ -14,21 +14,21 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("binary", type=Path, help="Input raw firmware binary")
+    parser.add_argument("binary", type=Path, help="Input raw bootloader binary")
     parser.add_argument("mem", type=Path, help="Output $readmemh text file")
     parser.add_argument(
         "--ram-size",
         type=int,
-        default=256 * 1024,
+        default=64 * 1024,
         metavar="BYTES",
-        help="RAM capacity in bytes (default: 262144 = 256 KiB)",
+        help="Bootloader region capacity in bytes (default: 65536 = 64 KiB)",
     )
     args = parser.parse_args()
 
     binary = args.binary.read_bytes()
     if len(binary) > args.ram_size:
         parser.error(
-            f"firmware image is {len(binary)} bytes, "
+            f"bootloader image is {len(binary)} bytes, "
             f"larger than RAM capacity {args.ram_size} bytes"
         )
 

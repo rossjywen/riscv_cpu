@@ -2,10 +2,10 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
 MEMORY {
-    RAM (rwx) : ORIGIN = 0x00000000, LENGTH = 256K
+    RAM (rwx) : ORIGIN = 0x00000000, LENGTH = 64K
 }
 
-__stack_top = ORIGIN(RAM) + LENGTH(RAM);  /* 0x00040000 */
+__stack_top = ORIGIN(RAM) + LENGTH(RAM);  /* 0x00010000 */
 __stack_bottom = __stack_top - 4K;       /* reserve 4 KiB for stack */
 
 SECTIONS {

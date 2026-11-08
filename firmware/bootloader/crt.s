@@ -3,13 +3,19 @@
     .type  _start, @function
 
 # -----------------------------------------------------------------------------
-# Bare-metal startup for RV32I
-# CPU reset PC = 0x00000000; code and data share the same writable BRAM.
+# Bootloader startup at reset address zero. link.ld reserves 64 KiB of RAM.
 # -----------------------------------------------------------------------------
 _start:
-    # Stack grows downward from the end of the 256 KiB RAM.
+    # Stack grows downward from this image's reserved stack area.
     lui     sp, %hi(__stack_top)
     addi    sp, sp, %lo(__stack_top)
+
+    # Establish a known M-mode environment before calling any C code.
+    csrci   mstatus, 8
+    csrw    mie, zero
+    lui     t0, %hi(trap_halt)
+    addi    t0, t0, %lo(trap_halt)
+    csrw    mtvec, t0
 
     # Initialize .bss to zero (word-aligned bounds from linker script).
     lui     t0, %hi(__bss_start)
@@ -32,3 +38,12 @@ halt:
     jal     zero, halt
 
     .size _start, . - _start
+
+    .balign 4
+trap_halt:
+    # Leave the fault context in t0/t1/t2 for simulation or debugger inspection.
+    csrr    t0, mcause
+    csrr    t1, mepc
+    csrr    t2, mtval
+trap_loop:
+    jal     zero, trap_loop

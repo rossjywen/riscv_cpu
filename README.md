@@ -2,21 +2,6 @@
 
 A simple, multi-cycle 32-bit RISC-V CPU and SoC written in Verilog, targeting the Digilent Arty A7-100T FPGA. The project runs bare-metal C code from on-chip Block RAM and communicates with a host PC through a custom native UART peripheral.
 
-## Current Progress
-
-- Implemented a multi-cycle CPU core with instruction fetch, decode, execute, and load/store operations (not yet a pipelined CPU).
-- Implemented an RV32I integer register file with 32 × 32-bit registers; `x0` always reads as zero.
-- Implemented integer ALU, shifts, comparisons, branches, jumps, and byte/halfword/word loads and stores, including sign extension and byte write enables.
-- Implemented all eight RV32M multiply/divide/remainder instructions in a separate `rv32m_unit` module. Multiplication has been divided into two clock stages to improve timing; division/remainder use an iterative implementation.
-- Implemented a ready/valid native memory interface, an address decoder, and 256 KiB of writable on-chip Block RAM initialized from `program.mem`.
-- Implemented a custom native UART with TX/RX, one-byte buffers and level interrupts. The SoC now connects BRAM, UART and the machine timer directly to the native memory interface.
-- Built and executed a bare-metal C UART "Hello RISC-V!" program on the physical FPGA. UART transmission and the CPU reset button have been verified.
-- Completed synthesis, placement, routing, and bitstream generation in Vivado 2025.1 for the Arty A7-100T.
-
-The FPGA bring-up above used the earlier AXI UART Lite design. The custom UART
-replacement and 80 MHz board wrapper are verified in simulation; a new FPGA
-bitstream still needs board validation. `rtl/axi_lite_master.v` remains as a
-reference and is not instantiated by `soc_top`.
 
 ## Supported Instructions
 
@@ -34,7 +19,8 @@ reference and is not instantiated by `soc_top`.
 | Divide / remainder (RV32M) | `DIV`, `DIVU`, `REM`, `REMU` |
 | Memory ordering | `FENCE` (currently treated as a no-op) |
 
-**Not yet implemented:** compressed instructions (RVC), CSRs, machine-mode interrupts/exceptions, and `ECALL`/`EBREAK`. RTOS support and instruction/data caches are future work.
+The core also implements Zicsr and machine-mode trap/interrupt handling.
+**Not yet implemented:** compressed instructions (RVC), RTOS support and instruction/data caches.
 
 ## Hardware and Memory Map
 
@@ -70,7 +56,7 @@ Each register below supports 32-bit reads and byte-enabled writes.
 
 The timer interrupt feeds the CPU's `irq_timer` input. Firmware must configure
 the trap handler and enable `mie.MTIE` and `mstatus.MIE` to take timer interrupts;
-the current UART demo still uses polling. Unimplemented offsets within the
+the bootloader uses polling. Unimplemented offsets within the
 timer window read as zero and ignore writes.
 
 ### Native UART registers
@@ -92,7 +78,7 @@ Reading Status clears these sticky flags. When enabled, the UART interrupt
 remains high until RX data and sticky flags are serviced. The current firmware
 continues to use polling with the same register addresses and status bits.
 
-## Firmware and FPGA Bring-up
+## Bootloader and FPGA Bring-up
 
 Include `rtl/uart.v` and `rtl/arty_a7_top.v` in Vivado's Design Sources.
 The board top is `arty_a7_top`; `soc_top` remains independent of vendor clock IP.
@@ -118,11 +104,11 @@ clock constraint to 12.5 ns. The Clocking Wizard's generated XDC supplies the
 100 MHz input clock; the board XDC keeps the duplicate definition commented out.
 No AXI UART Lite IP or AXI bridge is required.
 
-1. Build the bare-metal firmware using the existing firmware build script. The RISC-V GCC target uses `-march=rv32im -mabi=ilp32`.
-2. Ensure Vivado's Memory File source points to the **latest** `program.mem`. The BRAM contents are included in the bitstream at configuration time.
+1. Run `bash firmware/bootloader/build.sh` to build the bootloader for RV32IM with CSR support and the ILP32 ABI. `firmware/bootloader/program.mem` contains the BRAM initialization image.
+2. Ensure Vivado's Memory File source points to the **latest** `firmware/bootloader/program.mem`. The BRAM contents are included in the bitstream at configuration time.
 3. Run **Synthesis → Implementation → Generate Bitstream** in Vivado. Check `report_clocks` for the 100 MHz input and 80 MHz SoC clock, then verify timing after routing.
 4. Connect the board through its Micro-USB JTAG/UART port, open **Hardware Manager**, and choose **Open Target → Auto Connect**.
-5. Program the FPGA using `arty_a7_top.bit`; open a serial terminal at 115200 baud and press the board's **RESET** button to run the firmware again.
+5. Program the FPGA using `arty_a7_top.bit`; open a serial terminal at 115200 baud and press the board's **RESET** button to enter the bootloader.
 
 Example Linux UART terminal (verify which interface belongs to the board):
 
@@ -131,11 +117,91 @@ ls -l /dev/serial/by-id/
 picocom -b 115200 /dev/ttyUSB1
 ```
 
-Expected first bring-up output:
+Expected bootloader output after reset:
 
 ```text
-From Ross RISC-V
+BOOT READY
 ```
+
+Exit picocom with **Ctrl+A, then Ctrl+X** before using the uploader. Only one
+program should read the board UART at a time.
+
+## UART Application Download
+
+Run the following commands from the repository root. Install the host dependency
+in a Python virtual environment (once), then activate that environment in each
+new terminal:
+
+```bash
+python3 -m venv ~/.venvs/riscv-uart
+source ~/.venvs/riscv-uart/bin/activate
+python3 -m pip install 'pyserial>=3.5,<4'
+```
+
+The uploader is [scripts/uart_upload.py](scripts/uart_upload.py). Specify the
+actual UART device and application binary:
+
+```bash
+python3 scripts/uart_upload.py /dev/ttyUSB1 /path/to/application.bin
+```
+
+Before a new download, press the board's RESET button to return to the bootloader.
+The uploader queries the target, sends the image in 128-byte packets, checks
+acknowledgements, waits for BRAM CRC verification, and sends RUN. It then displays
+application output in the **same terminal by default**. Ctrl+C exits the host
+monitor and closes the serial port; the CPU keeps running.
+
+For a test image included in this repository:
+
+```bash
+bash tests/build_uart_tx.sh
+python3 scripts/uart_upload.py /dev/ttyUSB1 tests/build/uart_tx.bin
+```
+
+This application prints `Hello from RISC-V at 0x00010000!` once, followed by
+`UART TX test is running.` after each one-second delay.
+
+To download and verify first, then execute later:
+
+```bash
+python3 scripts/uart_upload.py /dev/ttyUSB1 tests/build/uart_tx.bin --no-run
+python3 scripts/uart_upload.py /dev/ttyUSB1 --run-only
+```
+
+`--no-run` exits after verification and leaves the CPU waiting in the bootloader.
+`--run-only` sends only RUN, takes no binary path, and starts monitoring by
+default. Keep the board powered and **do not press RESET between these two
+commands**: RESET clears download readiness and requires another download.
+
+| Option | Behavior / default |
+| --- | --- |
+| `--monitor` | Display application UART output after RUN; enabled by default |
+| `--no-monitor` | Exit after RUN; download debug messages are still displayed |
+| `--no-run` | Download and verify only, then exit without monitoring |
+| `--run-only` | Execute the image already verified by the bootloader |
+| `--baud 115200` | Host baud rate; the current hardware uses 115200, 8N1 |
+| `--timeout 10` | Reply timeout in seconds; default 10 |
+| `--retries 3` | Additional retries after a failed exchange; default 3; RUN is never retried |
+
+Use `python3 scripts/uart_upload.py --help` for the command-line reference.
+After closing the Python monitor, picocom can receive the application's ongoing
+output with `picocom -b 115200 /dev/ttyUSB1`; switching monitors does not require
+resetting the board.
+
+Link the application at `0x00010000` and pass its raw `.bin` file to the uploader.
+Its entry code must initialize its own stack,
+trap vector and BSS. The uploader accepts images from 4 bytes to **188 KiB
+(192512 bytes)**; application BSS/heap must also fit below its reserved stack.
+Application updates use UART and do not
+require rebuilding the FPGA bitstream. The bootloader owns
+`0x00000000`–`0x0000FFFF`; the application owns the remaining 192 KiB, including
+its 4 KiB stack. See the [bootloader implementation](firmware/bootloader/main.c)
+and the [test application memory layout](tests/uart_link.ld).
+
+During download, `[boot]` messages report the image size, receive progress,
+CRC verification, errors and RUN address. The uploader displays these messages
+automatically alongside the binary protocol. The bootloader's small
+`uart_printf()` uses the existing polling UART without linking libc.
 
 
 ## Vivado Tcl Commands
@@ -153,23 +219,6 @@ program_hw_devices [get_hw_devices xc7a100t_0]
 report_clocks
 report_timing_summary
 ```
-
-## Clock-wrapper Simulation
-
-From `firmware/`, test the board wrapper with the existing greeting image:
-
-```bash
-iverilog -g2012 -DSYNTHESIS -DCLOCK_WIZARD_MODEL -s tb_arty_a7_top \
-  -o /tmp/tb_arty_a7_top ../rtl/*.v ../sim/tb_arty_a7_top.v
-vvp /tmp/tb_arty_a7_top
-```
-
-The explicit `CLOCK_WIZARD_MODEL` define enables a simulation-only clock/lock
-model. It tests reset release, reset-button restart, loss-of-lock handling,
-the 10 kHz timer and the firmware's UART output at 115200 baud. For Vivado IP
-simulation, omit that define and use the generated Clocking Wizard model.
-Keep testbench files in Simulation Sources, not Design Sources. `SYNTHESIS`
-in this Icarus command only suppresses the CPU's verbose simulation trace.
 
 
 ## History
