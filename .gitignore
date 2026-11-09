@@ -1,6 +1,6 @@
 /firmware/bootloader/build/
 /firmware/bootloader/program.mem
-/tests/build/
+/firmware/build/
 xvlog.*
 xelab.*
 xsim.*
