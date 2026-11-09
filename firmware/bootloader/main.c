@@ -1,13 +1,11 @@
 #include <stdint.h>
 #include "protocol.h"
+#include "timer.h"
 #include "uart.h"
 #include "uart_printf.h"
 
-#define MTIME_LOW     (*(volatile uint32_t *)0x10001000u)
-#define MTIMECMP_LOW  (*(volatile uint32_t *)0x10001008u)
-#define MTIMECMP_HIGH (*(volatile uint32_t *)0x1000100Cu)
-#define RX_TIMEOUT_TICKS 10000u // 1 second at the timer's 10 kHz rate.
-#define QUIET_TICKS      20u   // 2 ms without a byte restores packet framing.
+#define RX_TIMEOUT_TICKS TIMER_CLOCK_HZ             // 1 second.
+#define QUIET_TICKS      (TIMER_CLOCK_HZ / 1000u * 2u) // 2 ms without a byte.
 
 static const uint8_t magic[4] = {'R', 'V', 'B', 'L'};
 
@@ -32,24 +30,19 @@ struct download {
 
 static struct download image;
 
-// UART_STATUS clears sticky errors when read: inspect that same snapshot.
 // Unsigned subtraction also handles the low timer word wrapping around.
 static enum status receive_byte(uint8_t *byte)
 {
-	uint32_t start = MTIME_LOW;
+	uint32_t start = timer_read_low();
 	for (;;) {
-		uint32_t status = UART_STATUS;
-		if (status & UART_RX_ERRORS) {
-			if (status & UART_RX_VALID) {
-				(void)UART_RX;
-			}
+		enum uart_rx_result result = uart_try_getc(byte);
+		if (result == UART_RX_ERROR) {
 			return ERROR_UART;
 		}
-		if (status & UART_RX_VALID) {
-			*byte = (uint8_t)UART_RX;
+		if (result == UART_RX_OK) {
 			return STATUS_OK;
 		}
-		if ((uint32_t)(MTIME_LOW - start) >= RX_TIMEOUT_TICKS) {
+		if ((uint32_t)(timer_read_low() - start) >= RX_TIMEOUT_TICKS) {
 			return ERROR_TIMEOUT;
 		}
 	}
@@ -59,13 +52,11 @@ static enum status receive_byte(uint8_t *byte)
 // The sender waits for a reply, so the next packet cannot overlap this drain.
 static void discard_until_quiet(void)
 {
-	uint32_t start = MTIME_LOW;
+	uint32_t start = timer_read_low();
 	uint32_t last_byte = start;
 	for (;;) {
-		uint32_t status = UART_STATUS;
-		uint32_t now = MTIME_LOW;
-		if (status & UART_RX_VALID) {
-			(void)UART_RX;
+		uint32_t now = timer_read_low();
+		if (uart_discard_rx_byte()) {
 			last_byte = now;
 		}
 		if ((uint32_t)(now - last_byte) >= QUIET_TICKS ||
@@ -262,10 +253,9 @@ static __attribute__((noreturn)) void run_application(void)
 	// Finish the RUN acknowledgement before application uart_init() resets TX.
 	uart_wait_tx_idle();
 	__asm__ volatile ("csrci mstatus, 8\n\tcsrw mie, zero" ::: "memory");
-	UART_CONTROL = 0;
-	MTIMECMP_LOW = 0xFFFFFFFFu;
-	MTIMECMP_HIGH = 0xFFFFFFFFu;
-	(void)UART_STATUS;
+	uart_disable_interrupts();
+	timer_set_compare(UINT64_MAX);
+	uart_clear_status();
 
 	// The application starts at _start, sets its own stack and clears its BSS.
 	// This multi-cycle CPU has no instruction cache/prefetch or FENCE.I support.
