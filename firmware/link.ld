@@ -1,12 +1,13 @@
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
+/* The Makefile supplies __ram_origin and __ram_size for each image. */
 MEMORY {
-    RAM (rwx) : ORIGIN = 0x00010000, LENGTH = 192K
+    RAM (rwx) : ORIGIN = __ram_origin, LENGTH = __ram_size
 }
 
-__stack_top = ORIGIN(RAM) + LENGTH(RAM); /* 0x00040000 */
-__stack_bottom = __stack_top - 4K;      /* Startup stack, then interrupt stack. */
+__stack_top = ORIGIN(RAM) + LENGTH(RAM);
+__stack_bottom = __stack_top - 4K; /* Startup stack; reused by app interrupts. */
 __freertos_irq_stack_top = __stack_top;
 
 SECTIONS {
@@ -40,8 +41,8 @@ SECTIONS {
     } > RAM
 
     __image_end = .;
-    ASSERT(_start == ORIGIN(RAM), "Application entry must be at 0x00010000")
-    ASSERT(__image_end <= __stack_bottom, "Application image/BSS overlaps reserved stack")
+    ASSERT(_start == ORIGIN(RAM), "Image entry must be at the start of its RAM region")
+    ASSERT(__image_end <= __stack_bottom, "Image/BSS overlaps reserved stack")
 
     /DISCARD/ : {
         *(.eh_frame .eh_frame.*)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Convert the little-endian RV32 bootloader binary to a Verilog $readmemh image.
 
-Usage:
-    python3 bin_to_mem.py build/bootloader.bin program.mem
+Usage from the repository root:
+    python3 scripts/bin_to_mem.py firmware/bootloader/build/bootloader.bin firmware/bootloader/program.mem
 
 Each output line contains one 32-bit word, printed as eight hexadecimal digits.
 The bootloader is linked to RAM byte address 0 and the BRAM is word-addressed.
